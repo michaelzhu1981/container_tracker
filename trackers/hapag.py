@@ -115,20 +115,62 @@ class HapagTracker(BaseTracker):
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
 
+    async def dismiss_onboarding(self) -> None:
+        """Close the Tracking Beta welcome tour so the search field is actionable."""
+        dialog = self.page.locator(".q-dialog--modal, [role='dialog']")
+        try:
+            await dialog.first.wait_for(state="visible", timeout=4_000)
+        except Exception:  # noqa: BLE001
+            return
+        close = self.page.locator(
+            ".q-dialog--modal button.q-btn--icon-only, "
+            ".q-dialog--modal button[aria-label*='close' i], "
+            "[role='dialog'] button:has-text('Skip')"
+        )
+        try:
+            if await close.first.is_visible(timeout=800):
+                await close.first.click(timeout=3_000, force=True)
+                await self.page.wait_for_timeout(400)
+        except Exception:  # noqa: BLE001
+            pass
+        for _ in range(4):
+            next_btn = self.page.locator(
+                ".q-dialog--modal button:has-text('Next'), "
+                ".q-dialog--modal button:has-text('Got it'), "
+                ".q-dialog--modal button:has-text('Done'), "
+                ".q-dialog--modal button:has-text('Start')"
+            )
+            try:
+                if await next_btn.first.is_visible(timeout=500):
+                    await next_btn.first.click(timeout=3_000)
+                    await self.page.wait_for_timeout(400)
+                    continue
+            except Exception:  # noqa: BLE001
+                break
+            break
+        try:
+            await self.page.keyboard.press("Escape")
+            await self.page.wait_for_timeout(300)
+        except Exception:  # noqa: BLE001
+            pass
+
     async def open_page(self) -> None:
         await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
-        await self.dismiss_cookies()
+        await self.dismiss_cookies(wait_ms=8_000)
         html = await self.page.content()
         lowered = html.lower()
         if "checking your browser" in lowered or "managed challenge" in lowered:
             return
         if "outdated browser" in lowered and "container" not in lowered:
             await self.page.goto(TRACING_URL, wait_until="domcontentloaded")
+        await self.dismiss_onboarding()
 
     async def search(self, container: str) -> None:
         await self.dismiss_cookies()
+        await self.dismiss_onboarding()
         field = None
         for selector in (
+            "input[data-cy='tracking-search-input']",
             "input[placeholder*='Container' i]",
             "input[name*='container' i]",
             "input[id*='container' i]",
@@ -148,10 +190,15 @@ class HapagTracker(BaseTracker):
                 continue
         if field is None:
             raise TrackerError("Could not find the container search field.", "SELECTOR")
-        await field.fill("")
-        await field.fill(container)
+        try:
+            await field.click(timeout=5_000)
+            await field.fill("")
+            await field.fill(container)
+        except Exception:  # noqa: BLE001
+            await field.fill(container, force=True)
         clicked = False
         for selector in (
+            "button[title='Search']",
             "button:has-text('Search')",
             "button:has-text('Track')",
             "input[type='submit']",
@@ -160,7 +207,10 @@ class HapagTracker(BaseTracker):
             button = self.page.locator(selector)
             try:
                 if await button.first.is_visible(timeout=1500):
-                    await button.first.click()
+                    try:
+                        await button.first.click(timeout=5_000)
+                    except Exception:  # noqa: BLE001
+                        await button.first.click(timeout=5_000, force=True)
                     clicked = True
                     break
             except Exception:  # noqa: BLE001
@@ -168,13 +218,36 @@ class HapagTracker(BaseTracker):
         if not clicked:
             await field.press("Enter")
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=20_000)
+            await self.page.wait_for_function(
+                """() => {
+                    const text = (document.body && document.body.innerText || "").toLowerCase();
+                    return (
+                        text.includes("no result") ||
+                        text.includes("not found") ||
+                        text.includes("could not find") ||
+                        text.includes("can't identify") ||
+                        text.includes("cannot identify") ||
+                        text.includes("no tracking") ||
+                        text.includes("number is not valid") ||
+                        text.includes("shipment details") ||
+                        text.includes("tracking details") ||
+                        !!document.querySelector("table tbody tr")
+                    );
+                }""",
+                timeout=20_000,
+            )
         except Exception:  # noqa: BLE001
-            pass
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def parse_events(self) -> list[CanonicalEvent]:
         html = await self.page.content()
         events = parse_hapag_html(html)
         if events:
             return events
+        text = (await self._visible_text()).lower()
+        if "number is not valid" in text:
+            raise TrackerError("Carrier rejected the container number as invalid.", "INVALID_INPUT")
         raise TrackerError("Tracking table was not found or could not be parsed.", "PARSE")

@@ -5,6 +5,7 @@ def test_cloudflare_visible_text():
     assert (
         challenge_code("checking your browser\nWhy did this happen?") == "CLOUDFLARE"
     )
+    assert challenge_code("Security Check\nManaged Challenge") == "CLOUDFLARE"
 
 
 def test_captcha_visible_text():

@@ -7,8 +7,34 @@ import re
 from config import SUPPORTED_CARRIERS
 
 _CONTAINER_RE = re.compile(r"^[A-Z]{4}\d{7}$")
-_ISO_ALPHABET = {
-    **{chr(i): i - 55 for i in range(65, 91)},
+# ISO 6346 letter values skip 11, 22, and 33.
+_ISO_LETTERS = {
+    "A": 10,
+    "B": 12,
+    "C": 13,
+    "D": 14,
+    "E": 15,
+    "F": 16,
+    "G": 17,
+    "H": 18,
+    "I": 19,
+    "J": 20,
+    "K": 21,
+    "L": 23,
+    "M": 24,
+    "N": 25,
+    "O": 26,
+    "P": 27,
+    "Q": 28,
+    "R": 29,
+    "S": 30,
+    "T": 31,
+    "U": 32,
+    "V": 34,
+    "W": 35,
+    "X": 36,
+    "Y": 37,
+    "Z": 38,
 }
 
 
@@ -32,8 +58,7 @@ def iso6346_check_digit_ok(container: str) -> bool:
         if char.isdigit():
             value = int(char)
         else:
-            value = _ISO_ALPHABET[char]
-            value = value + value // 11
+            value = _ISO_LETTERS[char]
         total += value * (2**index)
     check = total % 11 % 10
     return check == int(container[10])

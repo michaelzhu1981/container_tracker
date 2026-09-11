@@ -15,7 +15,14 @@ from status_engine import evaluate
 LOGGER = logging.getLogger("container_tracker")
 
 COOKIE_SELECTORS = (
+    "#onetrust-pc-sdk #accept-recommended-btn-handler",
+    "#accept-recommended-btn-handler",
+    "#onetrust-pc-sdk button:has-text('Select All')",
+    "#onetrust-pc-sdk button:has-text('Confirm My Choices')",
     "#onetrust-accept-btn-handler",
+    "button:has-text('Accept Cookies')",
+    "button:has-text('Select All')",
+    "button:has-text('Confirm My Choices')",
     "button:has-text('Accept all')",
     "button:has-text('Accept All')",
     "button:has-text('Agree')",
@@ -30,6 +37,7 @@ _CHALLENGE_GONE_JS = """() => {
         text.includes("checking your browser") ||
         text.includes("managed challenge") ||
         text.includes("verify you are human") ||
+        text.includes("security check") ||
         html.includes("cf-challenge")
     );
     return !blocked;
@@ -43,6 +51,7 @@ def challenge_code(text: str) -> str | None:
         "checking your browser" in blob
         or "managed challenge" in blob
         or "verify you are human" in blob
+        or "security check" in blob
         or ("attention required" in blob and "cloudflare" in blob)
     ):
         return "CLOUDFLARE"
@@ -69,17 +78,33 @@ class BaseTracker(ABC):
         self._html: Path | None = None
 
     async def dismiss_cookies(self, wait_ms: int = 3000) -> None:
-        banner = self.page.locator(", ".join(COOKIE_SELECTORS))
         try:
-            await banner.first.wait_for(state="visible", timeout=wait_ms)
-            await banner.first.click(timeout=3000, force=True)
-            try:
-                await banner.first.wait_for(state="hidden", timeout=8000)
-            except Exception:  # noqa: BLE001
-                pass
-            await self.page.wait_for_timeout(500)
+            await self.page.locator(
+                "#onetrust-pc-sdk, #onetrust-banner-sdk, #onetrust-accept-btn-handler"
+            ).first.wait_for(state="visible", timeout=wait_ms)
         except Exception:  # noqa: BLE001
-            return
+            pass
+        for _ in range(2):
+            clicked = False
+            for selector in COOKIE_SELECTORS:
+                locator = self.page.locator(selector)
+                try:
+                    if await locator.first.is_visible(timeout=400):
+                        await locator.first.click(timeout=3000, force=True)
+                        clicked = True
+                        await self.page.wait_for_timeout(500)
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if not clicked:
+                return
+            try:
+                await self.page.locator("#onetrust-pc-sdk, #onetrust-banner-sdk").first.wait_for(
+                    state="hidden", timeout=2500
+                )
+                return
+            except Exception:  # noqa: BLE001
+                continue
 
     async def _visible_text(self) -> str:
         try:
@@ -158,6 +183,7 @@ class BaseTracker(ABC):
             await self.dismiss_cookies()
             await self.pass_or_wait_for_challenge()
             await self.search(container)
+            await self.dismiss_cookies(wait_ms=8_000)
             await self.page.wait_for_timeout(1500)
             await self.pass_or_wait_for_challenge()
             html = await self.page.content()
