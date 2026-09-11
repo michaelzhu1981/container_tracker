@@ -1,0 +1,161 @@
+"""Classify tracking text into canonical event fields."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime
+
+from models import CanonicalEvent, Classifier, EventType, TransportMode
+
+_EMPTY_TRUE = (
+    "empty container",
+    "empty pickup",
+    "empty return",
+    "empty load",
+    "empty in",
+    "empty out",
+    "empty gate",
+    "returned to depot",
+    "空箱",
+)
+_EMPTY_TRUE_WORDS = ("empty",)
+_EMPTY_FALSE = ("laden", "fcl", "loaded (full)", "重箱")
+_EMPTY_FALSE_WORDS = ("full",)
+
+_BARGE = ("barge vessel", "barge", "lighter", "驳船")
+_FEEDER = ("feeder",)
+_MOTHER = ("mother", "ocean vessel", "deep sea", "deep-sea")
+_TRUCK = ("truck", "trailer", "road")
+_RAIL = ("rail", "railway", "train")
+_VESSEL_WORDS = ("vessel", "ship", "mv ", "m/v")
+
+_PLANNED = ("planned", "plan ", "schedule")
+_ESTIMATED = ("estimated", "estimate", "eta", "etd")
+
+_DATE_PATTERNS = [
+    ("%Y-%m-%d %H:%M:%S", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\b")),
+    ("%Y-%m-%d %H:%M", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})\b")),
+    ("%d-%b-%Y %H:%M", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2})\b")),
+    ("%d/%m/%Y %H:%M", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4} \d{2}:\d{2})\b")),
+    ("%Y-%m-%d", re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")),
+    ("%d-%b-%Y", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4})\b")),
+    ("%d/%m/%Y", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")),
+    ("%d.%m.%Y", re.compile(r"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")),
+]
+
+
+def _lower(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _has_word(text: str, word: str) -> bool:
+    return re.search(rf"\b{re.escape(word)}\b", text, flags=re.I) is not None
+
+
+def classify_empty(text: str) -> bool | None:
+    blob = _lower(text)
+    if any(token in blob for token in _EMPTY_TRUE):
+        return True
+    if _has_word(blob, "mt"):
+        return True
+    if any(token in blob for token in _EMPTY_FALSE):
+        return False
+    if _has_word(blob, "empty"):
+        return True
+    if _has_word(blob, "full"):
+        return False
+    return None
+
+
+def classify_transport(text: str) -> TransportMode:
+    blob = _lower(text)
+    if any(token in blob for token in _BARGE):
+        return "BARGE"
+    if any(token in blob for token in _TRUCK):
+        return "TRUCK"
+    if any(token in blob for token in _RAIL):
+        return "RAIL"
+    if any(token in blob for token in _FEEDER):
+        return "FEEDER"
+    if any(token in blob for token in _MOTHER):
+        return "MOTHER"
+    if any(token in blob for token in _VESSEL_WORDS):
+        return "VESSEL"
+    return "UNKNOWN"
+
+
+def classify_event_type(text: str) -> EventType:
+    blob = _lower(text)
+    if any(k in blob for k in ("vessel departed", "vessel departure", "sailed")):
+        return "DEPA"
+    if re.search(r"\bdeparted\b", blob) and "gate" not in blob:
+        return "DEPA"
+    if any(k in blob for k in ("on board", "onboard", "loaded on", "loaded", "load on vessel", "laden on")):
+        return "LOAD"
+    if re.search(r"\bload(ed)?\b", blob) and "download" not in blob:
+        return "LOAD"
+    if any(k in blob for k in ("discharged", "discharge", "unloaded")):
+        return "DISC"
+    if any(k in blob for k in ("empty returned", "empty return")):
+        return "GTIN"
+    if "full to consignee" in blob:
+        return "GTOT"
+    if "gate in" in blob or "gated in" in blob or "gate-in" in blob:
+        return "GTIN"
+    if "gate out" in blob or "gated out" in blob or "gate-out" in blob:
+        return "GTOT"
+    if any(k in blob for k in ("arrived", "arrival", "vessel arrived")):
+        return "ARRI"
+    return "OTHER"
+
+
+def classify_classifier(text: str, is_actual: bool | None = None) -> Classifier:
+    blob = _lower(text)
+    if any(token in blob for token in _ESTIMATED) or _has_word(blob, "eta") or _has_word(blob, "etd"):
+        return "EST"
+    if any(token in blob for token in _PLANNED):
+        return "PLN"
+    if is_actual is True:
+        return "ACT"
+    if is_actual is False:
+        return "PLN"
+    return "ACT"
+
+
+def parse_timestamp(text: str) -> tuple[str, str | None, str | None]:
+    """Return (raw, event_date, event_time). Never invent 00:00."""
+    raw = text.strip()
+    for fmt, pattern in _DATE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        token = match.group(1).replace("T", " ")
+        try:
+            parsed = datetime.strptime(token, fmt)
+        except ValueError:
+            continue
+        day = parsed.strftime("%Y-%m-%d")
+        if "%H" in fmt:
+            return raw, day, parsed.strftime("%H:%M")
+        return raw, day, None
+    return raw, None, None
+
+
+def is_empty_return(event: CanonicalEvent) -> bool:
+    blob = _lower(event.raw_text)
+    if event.classifier != "ACT":
+        return False
+    if any(
+        token in blob
+        for token in ("empty return", "returned to depot", "empty in", "empty gate in")
+    ):
+        return True
+    return bool(event.empty is True and event.type == "GTIN")
+
+
+def format_event_time(event: CanonicalEvent) -> str | None:
+    if not event.event_date:
+        return None
+    if event.event_time:
+        return f"{event.event_date} {event.event_time}"
+    return event.event_date

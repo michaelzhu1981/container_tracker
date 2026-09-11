@@ -1,0 +1,19 @@
+# Display-name aliases for inferred POL / Load Port. Not used as input.
+YANTIAN:
+  aliases:
+    - YANTIAN
+    - YANTIAN, CHINA
+    - CNYTN
+    - YICT
+    - YANTIAN PT
+NANSHA:
+  aliases:
+    - NANSHA
+    - NANSHA, CHINA
+    - CNNSA
+    - GUANGZHOU NANSHA
+SHEKOU:
+  aliases:
+    - SHEKOU
+    - SHEKOU, CHINA
+    - CNSHK

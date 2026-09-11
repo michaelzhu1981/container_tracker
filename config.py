@@ -1,0 +1,73 @@
+"""Runtime configuration for the container tracker."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+HEADLESS = True
+LOCALE = "en-US"
+NAV_TIMEOUT_MS = 45_000
+ACTION_TIMEOUT_MS = 15_000
+QUERY_DELAY_SECONDS = (2.0, 4.0)
+MAX_RETRIES = 1
+
+INPUT_XLSX = ROOT / "input" / "containers.xlsx"
+OUTPUT_XLSX = ROOT / "output" / "containers_result.xlsx"
+SCREENSHOT_DIR = ROOT / "screenshots"
+HTML_DIR = ROOT / "logs" / "html"
+LOG_DIR = ROOT / "logs"
+SESSION_DIR = ROOT / "sessions"
+PORTS_YAML = ROOT / "data" / "ports.yaml"
+
+SUPPORTED_CARRIERS = ("HLCU", "YMJA", "ONEY", "MAEU", "MSCU", "CMDU")
+
+CARRIER_TIMEOUT_MS = {
+    "HLCU": 45_000,
+    "YMJA": 45_000,
+    "ONEY": 45_000,
+    "MAEU": 60_000,
+    "MSCU": 60_000,
+    "CMDU": 45_000,
+}
+
+RESULT_COLUMNS = (
+    "Container",
+    "Carrier",
+    "POL",
+    "Status",
+    "Loaded",
+    "Sailed",
+    "Vessel",
+    "Voyage",
+    "Load Port",
+    "Load Time",
+    "ATD",
+    "Latest Event",
+    "Checked At",
+    "Check Result",
+    "Error Code",
+    "Error",
+    "Screenshot",
+)
+
+STANDARD_OUTPUT_NAMES = set(RESULT_COLUMNS)
+
+HEADER_ALIASES = {
+    "container": "Container",
+    "container no.": "Container",
+    "container no": "Container",
+    "container number": "Container",
+    "ctr no": "Container",
+    "箱号": "Container",
+    "集装箱号": "Container",
+    "carrier": "Carrier",
+    "carrier code": "Carrier",
+    "scac": "Carrier",
+    "船公司": "Carrier",
+}
+
+
+def session_path(carrier: str) -> Path:
+    return SESSION_DIR / f"{carrier.lower()}.json"
