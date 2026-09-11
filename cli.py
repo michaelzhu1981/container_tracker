@@ -34,6 +34,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show the browser (debug only). Default is headless.",
     )
+    parser.add_argument(
+        "--wait-challenge",
+        action="store_true",
+        help=(
+            "Open a visible browser and wait if Cloudflare/CAPTCHA appears, "
+            "so you can complete the check; then continue tracking. Implies --headed."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=None, help="Track at most N rows.")
     parser.add_argument(
         "--carriers",
@@ -56,7 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging()
-    headed = bool(args.headed or not HEADLESS)
+    headed = bool(args.headed or args.wait_challenge or not HEADLESS)
+    wait_for_challenge = bool(args.wait_challenge)
+    if wait_for_challenge and not headed:
+        headed = True
 
     print("Container Tracker")
     print("===================================")
@@ -68,7 +79,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         container = normalize_container(args.container)
         carrier = normalize_carrier(args.carrier)
-        result = asyncio.run(run_single(carrier, container, headed=headed))
+        result = asyncio.run(
+            run_single(
+                carrier,
+                container,
+                headed=headed,
+                wait_for_challenge=wait_for_challenge,
+            )
+        )
         print_progress(1, 1, result)
         print_summary([result], None)
         if args.output:
@@ -107,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         run_batch(
             rows,
             headed=headed,
+            wait_for_challenge=wait_for_challenge,
             resume=args.resume,
             output_path=output_path,
         )

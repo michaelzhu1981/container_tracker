@@ -25,6 +25,7 @@ playwright install chromium
 python app.py --carrier HLCU --container HLXU1234567
 python app.py --carrier YMJA --container YMLU1234567
 python app.py --carrier HLCU --container HLXU1234567 --headed
+python app.py --carrier HLCU --container HLXU1234567 --wait-challenge
 ```
 
 批量：
@@ -35,7 +36,16 @@ python app.py input/containers.xlsx
 
 结果写入 `output/containers_result.xlsx`。失败截图在 `screenshots/`，页面 HTML 在 `logs/html/`。
 
-当前已实现 Hapag-Lloyd (`HLCU`) 与 Yang Ming (`YMJA`)。其余船公司会记为尚未实现。Hapag 若遇到 Cloudflare，该行记失败并继续；阳明站点目前可直接打开。遇到 CAPTCHA / Cloudflare 时该行进入人工队列，程序继续查下一箱。
+当前已实现 Hapag-Lloyd (`HLCU`) 与 Yang Ming (`YMJA`)。其余船公司会记为尚未实现。
+
+默认 headless 遇到 Cloudflare / CAPTCHA 会记失败并查下一箱，**不会绕过验证**。若要自己在浏览器里点完再继续自动查询：
+
+```bash
+python app.py --carrier HLCU --container HLXU1234567 --wait-challenge
+python app.py input/containers.xlsx --wait-challenge
+```
+
+`--wait-challenge` 会打开可见浏览器，最多等 3 分钟；点完后程序自动搜箱。同一批后面的箱子会复用这次会话。超时仍记 `CLOUDFLARE`。
 
 ## License
 

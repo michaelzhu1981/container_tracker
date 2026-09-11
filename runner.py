@@ -140,16 +140,24 @@ def _cells_to_result(container: str, carrier: str, cells: dict) -> TrackResult:
     )
 
 
-async def _track_one(page, carrier: str, container: str) -> TrackResult:
+async def _track_one(
+    page, carrier: str, container: str, *, wait_for_challenge: bool = False
+) -> TrackResult:
     tracker_cls = TRACKERS[carrier]
-    tracker = tracker_cls(page)
+    tracker = tracker_cls(page, wait_for_challenge=wait_for_challenge)
     LOGGER.info("Tracking %s %s", carrier, container)
     if container_shape_ok(container) and not iso6346_check_digit_ok(container):
         LOGGER.warning("ISO 6346 check digit failed for %s; querying anyway.", container)
     return await tracker.track(container)
 
 
-async def run_single(carrier: str, container: str, *, headed: bool = False) -> TrackResult:
+async def run_single(
+    carrier: str,
+    container: str,
+    *,
+    headed: bool = False,
+    wait_for_challenge: bool = False,
+) -> TrackResult:
     from artifacts import checked_at
     from playwright.async_api import async_playwright
 
@@ -173,7 +181,9 @@ async def run_single(carrier: str, container: str, *, headed: bool = False) -> T
         )
         context.set_default_timeout(CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS))
         page = await context.new_page()
-        result = await _track_one(page, carrier, container)
+        result = await _track_one(
+            page, carrier, container, wait_for_challenge=wait_for_challenge
+        )
         session.parent.mkdir(parents=True, exist_ok=True)
         await context.storage_state(path=str(session))
         await context.close()
@@ -185,6 +195,7 @@ async def run_batch(
     rows: list[dict],
     *,
     headed: bool = False,
+    wait_for_challenge: bool = False,
     resume: bool = False,
     output_path: Path = OUTPUT_XLSX,
     previous_path: Path | None = None,
@@ -248,7 +259,12 @@ async def run_batch(
                 ):
                     results[idx] = _invalid_result(row, checked_at())
                 else:
-                    results[idx] = await _track_one(page, carrier, row["Container"])
+                    results[idx] = await _track_one(
+                        page,
+                        carrier,
+                        row["Container"],
+                        wait_for_challenge=wait_for_challenge,
+                    )
                 print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
                 written = write_output(written, build_output_frame(rows, results))
             session.parent.mkdir(parents=True, exist_ok=True)

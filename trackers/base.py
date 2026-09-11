@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from artifacts import checked_at, html_path, relative_to_root, screenshot_path
+from config import CHALLENGE_WAIT_MS
 from models import CanonicalEvent, TimelineOrder, TrackResult
 from status_engine import evaluate
 
@@ -22,6 +23,33 @@ COOKIE_SELECTORS = (
     "button:has-text('Allow all')",
 )
 
+_CHALLENGE_GONE_JS = """() => {
+    const text = (document.body && document.body.innerText || "").toLowerCase();
+    const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
+    const blocked = (
+        text.includes("checking your browser") ||
+        text.includes("managed challenge") ||
+        text.includes("verify you are human") ||
+        html.includes("cf-challenge")
+    );
+    return !blocked;
+}"""
+
+
+def challenge_code(text: str) -> str | None:
+    """Return CLOUDFLARE, CAPTCHA, or None from visible page text."""
+    blob = text.lower()
+    if (
+        "checking your browser" in blob
+        or "managed challenge" in blob
+        or "verify you are human" in blob
+        or ("attention required" in blob and "cloudflare" in blob)
+    ):
+        return "CLOUDFLARE"
+    if "recaptcha" in blob or "hcaptcha" in blob:
+        return "CAPTCHA"
+    return None
+
 
 class TrackerError(Exception):
     def __init__(self, message: str, code: str) -> None:
@@ -34,8 +62,9 @@ class BaseTracker(ABC):
     timeline_order: TimelineOrder = "oldest_first"
     tracking_url: str = ""
 
-    def __init__(self, page: Any) -> None:
+    def __init__(self, page: Any, *, wait_for_challenge: bool = False) -> None:
         self.page = page
+        self.wait_for_challenge = wait_for_challenge
         self._screenshot: Path | None = None
         self._html: Path | None = None
 
@@ -52,21 +81,52 @@ class BaseTracker(ABC):
         except Exception:  # noqa: BLE001
             return
 
-    def detect_blocks(self, html: str) -> None:
-        blob = html.lower()
-        if any(
-            token in blob
-            for token in (
-                "managed challenge",
-                "checking your browser",
-                "cf-challenge",
-                "attention required",
-                "cloudflare",
+    async def _visible_text(self) -> str:
+        try:
+            return await self.page.evaluate(
+                "() => (document.body && document.body.innerText) || ''"
             )
-        ) and ("challenge" in blob or "checking your browser" in blob or "managed challenge" in blob):
+        except Exception:  # noqa: BLE001
+            return await self.page.content()
+
+    def detect_blocks(self, html: str) -> None:
+        code = challenge_code(html)
+        if code == "CLOUDFLARE":
             raise TrackerError("Cloudflare challenge detected.", "CLOUDFLARE")
-        if any(token in blob for token in ("captcha", "recaptcha", "hcaptcha")):
+        if code == "CAPTCHA":
             raise TrackerError("CAPTCHA detected.", "CAPTCHA")
+
+    async def pass_or_wait_for_challenge(self) -> None:
+        code = challenge_code(await self._visible_text())
+        if not code:
+            return
+        if not self.wait_for_challenge:
+            self.detect_blocks(await self._visible_text())
+            return
+        seconds = CHALLENGE_WAIT_MS // 1000
+        print(
+            f"Security check ({code}) is blocking the page. "
+            f"Complete it in the browser window; tracking resumes automatically "
+            f"(timeout {seconds}s)."
+        )
+        LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
+        try:
+            await self.page.wait_for_function(
+                _CHALLENGE_GONE_JS, timeout=CHALLENGE_WAIT_MS
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise TrackerError(
+                f"Timed out waiting for you to complete the {code} check.",
+                code,
+            ) from exc
+        await self.page.wait_for_timeout(1000)
+        await self.dismiss_cookies(wait_ms=5000)
+        still = challenge_code(await self._visible_text())
+        if still:
+            raise TrackerError(
+                f"Timed out waiting for you to complete the {still} check.",
+                still,
+            )
 
     async def save_artifacts(self, container: str) -> None:
         self._screenshot = screenshot_path(container)
@@ -96,11 +156,11 @@ class BaseTracker(ABC):
         try:
             await self.open_page()
             await self.dismiss_cookies()
-            self.detect_blocks(await self.page.content())
+            await self.pass_or_wait_for_challenge()
             await self.search(container)
             await self.page.wait_for_timeout(1500)
+            await self.pass_or_wait_for_challenge()
             html = await self.page.content()
-            self.detect_blocks(html)
             blob = html.lower()
             if any(
                 token in blob

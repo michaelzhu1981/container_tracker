@@ -12,6 +12,7 @@ NAV_TIMEOUT_MS = 45_000
 ACTION_TIMEOUT_MS = 15_000
 QUERY_DELAY_SECONDS = (2.0, 4.0)
 MAX_RETRIES = 1
+CHALLENGE_WAIT_MS = 180_000
 
 INPUT_XLSX = ROOT / "input" / "containers.xlsx"
 OUTPUT_XLSX = ROOT / "output" / "containers_result.xlsx"
