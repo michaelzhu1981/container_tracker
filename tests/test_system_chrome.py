@@ -5,6 +5,7 @@ from system_chrome import (
     SystemChromePage,
     _as_iife,
     _bounds_to_rect,
+    _clip_rect,
     _find_element_js,
     _parse_js_result,
     _parse_rect,
@@ -16,7 +17,9 @@ from system_chrome import (
     close_chrome_tabs,
     list_chrome_tab_urls,
     open_chrome_tab,
+    stitch_pngs_vertically,
     write_png_data_url,
+    write_png_rgba,
 )
 
 TINY_PNG = (
@@ -50,6 +53,7 @@ def test_screenshot_root_prefers_tracking_section():
     assert "#trackingsearchsection" in _screenshot_root_js()
     assert ".hal-event-tracking" in _screenshot_root_js()
     assert "unitActivity" in _screenshot_root_js()
+    assert "tracing-result-wrapper" in _screenshot_root_js()
     scoped = _screenshot_root_js("#gridTrackingDetails")
     assert "closest" in scoped
     assert "#gridTrackingDetails" in scoped
@@ -166,6 +170,7 @@ def test_bounds_and_element_rects():
     window = (48, 30, 1229, 1583)
     assert _rect_inside((80, 120, 800, 600), window) is True
     assert _rect_inside((0, 0, 20, 20), window) is False
+    assert _clip_rect((0, 0, 2000, 2000), window) == window
 
 
 @pytest.mark.parametrize("host,selector", [
@@ -191,6 +196,18 @@ def test_capture_chrome_png_uses_window_screenshot(tmp_path, monkeypatch, host, 
     assert seen == [host]
     assert wrote.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert b"window-shot" in wrote.read_bytes()
+
+
+def test_stitch_pngs_vertically_keeps_both_slices(tmp_path):
+    top = tmp_path / "top.png"
+    bottom = tmp_path / "bottom.png"
+    dest = tmp_path / "full.png"
+    write_png_rgba(top, 80, 40, bytes([255, 0, 0, 255] * 80 * 40))
+    write_png_rgba(bottom, 80, 48, bytes([0, 255, 0, 255] * 80 * 48))
+    assert stitch_pngs_vertically([top, bottom], dest) is True
+    raw = dest.read_bytes()
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    assert dest.stat().st_size > top.stat().st_size
 
 
 def test_capture_chrome_png_fails_when_window_capture_fails(tmp_path, monkeypatch):

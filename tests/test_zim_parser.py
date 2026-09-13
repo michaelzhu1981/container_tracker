@@ -50,6 +50,27 @@ def test_parse_embedded_json_on_board_waiting():
     assert result.pol == "YANTIAN"
 
 
+def test_parse_card_layout_sailed_from_haiphong():
+    html = (FIXTURES / "haiphong_cards.html").read_text(encoding="utf-8")
+    events = parse_zim_html(html)
+    assert [event.type for event in events] == ["DEPA", "LOAD", "GTIN", "GTOT"]
+    assert events[0].vessel == "ZIM SPINEL"
+    assert events[0].voyage == "10E"
+    assert "HAIPHONG" in events[0].location_raw.upper()
+    result = evaluate(
+        events,
+        container="TGHU5216601",
+        carrier="ZIMU",
+        timeline_order="newest_first",
+        checked_at="2026-09-14 00:20:00",
+    )
+    assert result.status == "SAILED"
+    assert result.pol == "HAI PHONG"
+    assert result.atd == "2026-09-12 21:35"
+    assert result.vessel == "ZIM SPINEL"
+    assert result.voyage == "10E"
+
+
 def test_parse_zim_payload():
     events = parse_zim_payload(
         {
@@ -75,6 +96,7 @@ def test_zim_uses_system_chrome_like_cmdu():
     assert ZimTracker.system_chrome_challenge == "hCaptcha"
     assert "input[type='text']" not in _SEARCH_FIELD_SELECTORS
     assert "input.chips-input" in _SEARCH_FIELD_SELECTORS
+    assert ".tracing-result-wrapper" in ZimTracker.screenshot_selectors
 
 
 @pytest.mark.asyncio

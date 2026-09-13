@@ -160,6 +160,10 @@ def test_query_screenshot_keeps_tracking_results_only():
         '<div class="unitActivityList"></div>',
     )
     assert is_query_screenshot_page(
+        "Last Activity\nVessel departure from Port of Loading",
+        '<div class="tracing-result-wrapper"><li class="card-container-activity"></li></div>',
+    )
+    assert is_query_screenshot_page(
         "Cargo Tracking Result\nView Details",
         '<a class="view-details">View Details</a>',
     )

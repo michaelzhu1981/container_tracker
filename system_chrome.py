@@ -7,9 +7,12 @@ import base64
 import json
 import logging
 import re
+import shutil
+import struct
 import subprocess
 import tempfile
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -329,6 +332,8 @@ _DEFAULT_SHOT_ROOT_JS = """(document.querySelector("#trackingsearchsection")
     || document.querySelector("#gridTrackingDetails")
     || document.querySelector(".tracking-details")
     || document.querySelector(".hal-event-tracking")
+    || document.querySelector(".tracing-result-wrapper")
+    || document.querySelector(".activity-card-holder")
     || document.querySelector("[class*='unitActivity']")
     || document.body)"""
 
@@ -346,6 +351,54 @@ _ELEMENT_SCREEN_RECT_JS = r"""() => {
         w: Math.round(r.width),
         h: Math.round(r.height)
     };
+}"""
+
+_SCROLL_ROOT_START_JS = r"""() => {
+    const root = __ROOT__;
+    if (!root) return false;
+    try { root.scrollIntoView({ block: "start", inline: "nearest" }); } catch (err) {}
+    return true;
+}"""
+
+_VISIBLE_SLICE_JS = r"""() => {
+    const root = __ROOT__;
+    if (!root) return null;
+    const r = root.getBoundingClientRect();
+    const top = Math.max(0, Math.min(window.innerHeight, r.top));
+    const bottom = Math.max(0, Math.min(window.innerHeight, r.bottom));
+    const left = Math.max(0, Math.min(window.innerWidth, r.left));
+    const right = Math.max(0, Math.min(window.innerWidth, r.right));
+    const h = Math.round(bottom - top);
+    const w = Math.round(right - left);
+    if (w < 20 || h < 8) return null;
+    const chromeX = Math.max(0, window.outerWidth - window.innerWidth);
+    const chromeY = Math.max(0, window.outerHeight - window.innerHeight);
+    return {
+        x: Math.round(window.screenX + chromeX / 2 + left),
+        y: Math.round(window.screenY + chromeY + top),
+        w: w,
+        h: h,
+        remaining: Math.round(Math.max(0, r.bottom - window.innerHeight))
+    };
+}"""
+
+_SCROLL_SLICE_JS = r"""() => {
+    const root = __ROOT__;
+    const amount = __DY__;
+    if (!amount) return 0;
+    const canScroll = (el) => el && ((el.scrollHeight || 0) - (el.clientHeight || 0) > 4);
+    let node = root;
+    while (node && node !== document.documentElement && node !== document.body) {
+        if (canScroll(node)) {
+            const before = node.scrollTop;
+            node.scrollTop = before + amount;
+            return Math.round(node.scrollTop - before);
+        }
+        node = node.parentElement;
+    }
+    const before = window.scrollY;
+    window.scrollBy(0, amount);
+    return Math.round(window.scrollY - before);
 }"""
 
 # Fallback when macOS window capture is unavailable. This paints boxes and
@@ -468,7 +521,7 @@ def _screenshot_root_js(selector: str | None = None) -> str:
     return f"""(() => {{
         const el = {found};
         if (!el) return null;
-        return el.closest("#trackingsearchsection, .tracking-details, .hal-event-tracking") || el;
+        return el.closest("#trackingsearchsection, .tracking-details, .hal-event-tracking, .tracing-result-wrapper, .activity-card-holder") || el;
     }})()"""
 
 
@@ -562,6 +615,137 @@ def _rect_inside(
     return ix >= ox - 8 and iy >= oy - 8 and ix + iw <= ox + ow + 8 and iy + ih <= oy + oh + 8
 
 
+def _clip_rect(
+    inner: tuple[int, int, int, int], outer: tuple[int, int, int, int]
+) -> tuple[int, int, int, int] | None:
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    x1, y1 = max(ix, ox), max(iy, oy)
+    x2, y2 = min(ix + iw, ox + ow), min(iy + ih, oy + oh)
+    if x2 - x1 < 20 or y2 - y1 < 8:
+        return None
+    return x1, y1, x2 - x1, y2 - y1
+
+
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def read_png_rgba(path: Path) -> tuple[int, int, bytes]:
+    """Decode an 8-bit RGB/RGBA PNG into tightly packed RGBA pixels."""
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    pos = 8
+    width = height = 0
+    bit_depth = color_type = 0
+    idat = bytearray()
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos : pos + 4])[0]
+        ctype = data[pos + 4 : pos + 8]
+        chunk = data[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk[:10])
+        elif ctype == b"IDAT":
+            idat.extend(chunk)
+        elif ctype == b"IEND":
+            break
+    if bit_depth != 8 or color_type not in {2, 6} or width < 1 or height < 1:
+        raise ValueError("unsupported PNG")
+    raw = zlib.decompress(bytes(idat))
+    bpp = 4 if color_type == 6 else 3
+    stride = width * bpp
+    rows: list[bytes] = []
+    prev = bytearray(stride)
+    i = 0
+    for _ in range(height):
+        ftype = raw[i]
+        i += 1
+        row = bytearray(raw[i : i + stride])
+        i += stride
+        if ftype == 1:
+            for x in range(stride):
+                row[x] = (row[x] + (row[x - bpp] if x >= bpp else 0)) & 255
+        elif ftype == 2:
+            for x in range(stride):
+                row[x] = (row[x] + prev[x]) & 255
+        elif ftype == 3:
+            for x in range(stride):
+                left = row[x - bpp] if x >= bpp else 0
+                row[x] = (row[x] + ((left + prev[x]) // 2)) & 255
+        elif ftype == 4:
+            for x in range(stride):
+                left = row[x - bpp] if x >= bpp else 0
+                up_left = prev[x - bpp] if x >= bpp else 0
+                row[x] = (row[x] + _paeth(left, prev[x], up_left)) & 255
+        elif ftype != 0:
+            raise ValueError(f"unsupported PNG filter {ftype}")
+        rows.append(bytes(row))
+        prev = row
+    if bpp == 4:
+        return width, height, b"".join(rows)
+    rgba = bytearray(width * height * 4)
+    src = b"".join(rows)
+    for px in range(width * height):
+        rgba[px * 4 : px * 4 + 3] = src[px * 3 : px * 3 + 3]
+        rgba[px * 4 + 3] = 255
+    return width, height, bytes(rgba)
+
+
+def write_png_rgba(path: Path, width: int, height: int, pixels: bytes) -> Path:
+    raw = bytearray()
+    stride = width * 4
+    for y in range(height):
+        raw.append(0)
+        raw.extend(pixels[y * stride : (y + 1) * stride])
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
+    return path
+
+
+def stitch_pngs_vertically(paths: list[Path], dest: Path) -> bool:
+    decoded: list[tuple[int, int, bytes]] = []
+    for path in paths:
+        try:
+            decoded.append(read_png_rgba(path))
+        except (OSError, ValueError, zlib.error):
+            return False
+    if not decoded:
+        return False
+    width = min(item[0] for item in decoded)
+    height = sum(item[1] for item in decoded)
+    if width < 20 or height < 8:
+        return False
+    out = bytearray(width * height * 4)
+    y = 0
+    for src_w, src_h, pixels in decoded:
+        for row in range(src_h):
+            src = row * src_w * 4
+            dst = (y + row) * width * 4
+            out[dst : dst + width * 4] = pixels[src : src + width * 4]
+        y += src_h
+    write_png_rgba(dest, width, height, bytes(out))
+    return dest.is_file() and dest.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def _screencapture_rect(rect: tuple[int, int, int, int], dest: Path) -> bool:
     x, y, width, height = rect
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -576,6 +760,68 @@ def _screencapture_rect(rect: tuple[int, int, int, int], dest: Path) -> bool:
     return result.returncode == 0 and _png_looks_valid(dest)
 
 
+def _chrome_root_js(script: str, *, host: str, selector: str | None) -> Any:
+    return chrome_js(
+        script.replace("__ROOT__", _screenshot_root_js(selector), 1),
+        host=host,
+    )
+
+
+def _try_scrolled_element_screenshot(
+    dest: Path, *, host: str, selector: str | None, window: tuple[int, int, int, int]
+) -> bool:
+    try:
+        _chrome_root_js(_SCROLL_ROOT_START_JS, host=host, selector=selector)
+    except SystemChromeError:
+        return False
+    time.sleep(0.2)
+    work = dest.parent / f".{dest.stem}_slices"
+    work.mkdir(parents=True, exist_ok=True)
+    parts: list[Path] = []
+    try:
+        for idx in range(16):
+            try:
+                info = _chrome_root_js(_VISIBLE_SLICE_JS, host=host, selector=selector)
+            except SystemChromeError:
+                break
+            rect = _parse_rect(info)
+            if rect is None:
+                break
+            if not _rect_inside(rect, window):
+                rect = _clip_rect(rect, window)
+            if rect is None:
+                break
+            part = work / f"{idx:02d}.png"
+            if not _screencapture_rect(rect, part):
+                break
+            parts.append(part)
+            remaining = int(info.get("remaining") or 0) if isinstance(info, dict) else 0
+            if remaining <= 4:
+                break
+            try:
+                moved = _chrome_root_js(
+                    _SCROLL_SLICE_JS.replace("__DY__", str(max(rect[3], 1)), 1),
+                    host=host,
+                    selector=selector,
+                )
+            except SystemChromeError:
+                break
+            if not moved:
+                break
+            time.sleep(0.2)
+        if not parts:
+            return False
+        if len(parts) == 1:
+            dest.write_bytes(parts[0].read_bytes())
+            return _png_looks_valid(dest)
+        return stitch_pngs_vertically(parts, dest)
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        dest.unlink(missing_ok=True)
+        return False
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _try_window_screenshot(
     path: str | Path, *, host: str, selector: str | None = None
 ) -> bool:
@@ -586,6 +832,8 @@ def _try_window_screenshot(
     if window is None:
         LOGGER.info("No on-screen Chrome window found for %s", host)
         return False
+    if _try_scrolled_element_screenshot(dest, host=host, selector=selector, window=window):
+        return True
     rect = window
     try:
         script = _ELEMENT_SCREEN_RECT_JS.replace("__ROOT__", _screenshot_root_js(selector), 1)

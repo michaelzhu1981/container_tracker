@@ -131,6 +131,9 @@ _QUERY_PAGE_MARKERS = (
     "vessel departure from pol",
     "display previous moves",
     "unit activity",
+    "tracing-result-wrapper",
+    "card-container-activity",
+    "last activity",
 )
 
 

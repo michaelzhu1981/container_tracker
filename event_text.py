@@ -110,9 +110,10 @@ def classify_event_type(text: str) -> EventType:
         return "DEPA"
     if re.search(r"\bdepart(?:ed|ure)s?\b", blob) and "gate" not in blob:
         return "DEPA"
-    if any(k in blob for k in ("unloaded", "discharged")):
+    action = re.sub(r"port of discharg\w*", " ", blob)
+    if any(k in action for k in ("unloaded", "discharged")):
         return "DISC"
-    if "discharge" in blob and not any(k in blob for k in ("arrival", "arrived")):
+    if "discharge" in action and not any(k in blob for k in ("arrival", "arrived")):
         return "DISC"
     if any(k in blob for k in ("on board", "onboard", "loaded on", "load on vessel", "laden on")):
         return "LOAD"
@@ -135,6 +136,7 @@ def classify_event_type(text: str) -> EventType:
         k in blob
         for k in (
             "empty container release",
+            "empty container dispatched",
             "empty to shipper",
             "empty dispatched",
         )

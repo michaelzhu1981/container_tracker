@@ -37,6 +37,7 @@ _JSON_VSL_KEYS = ("vesselname", "vessel")
 _JSON_VOY_KEYS = ("voyage", "voyageno")
 
 _VOYAGE_RE = re.compile(r"\b(\d{2,4}[A-Z])\b", re.I)
+_SLASH_VOYAGE_RE = re.compile(r"(?:/|\s)(\d{1,4})\s*/\s*([A-Z])\b", re.I)
 _SKIP_STATUS = frozenset({"", "activity", "event", "status", "movement"})
 _SEARCH_FIELD_SELECTORS = (
     "input.chips-input",
@@ -70,16 +71,145 @@ def _cell_text(row: list[dict], index: int | None) -> str:
 
 
 def _voyage_and_vessel(mode_text: str) -> tuple[str | None, str | None]:
-    blob = " ".join(mode_text.replace("/", " ").split())
+    blob = " ".join(mode_text.split())
     if not blob or blob.lower() in {"vessel", "barge", "truck", "rail"}:
         return None, None
-    match = _VOYAGE_RE.search(blob)
+    slash = _SLASH_VOYAGE_RE.search(blob)
+    if slash:
+        voyage = f"{slash.group(1)}{slash.group(2).upper()}"
+        vessel = " ".join(blob[: slash.start()].split()).strip(" -/()") or None
+        return vessel, voyage
+    spaced = " ".join(blob.replace("/", " ").split())
+    match = _VOYAGE_RE.search(spaced)
     voyage = match.group(1).upper() if match else None
-    vessel = blob
+    vessel = spaced
     if match:
-        vessel = (blob[: match.start()] + blob[match.end() :]).strip(" /-")
+        vessel = (spaced[: match.start()] + spaced[match.end() :]).strip(" /-")
     vessel = " ".join(vessel.split()).strip(" -/()") or None
     return vessel, voyage
+
+
+def _strip_html(blob: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", blob)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&#39;", "'")
+        .replace("&quot;", '"')
+    )
+    return " ".join(text.split())
+
+
+def _match_balanced_tag(html: str, start: int) -> str | None:
+    if start < 0 or start >= len(html) or html[start] != "<":
+        return None
+    name_end = start + 1
+    while name_end < len(html) and html[name_end] not in " \t\n\r/>":
+        name_end += 1
+    name = html[start + 1 : name_end].lower()
+    if not name:
+        return None
+    lower = html.lower()
+    open_pat = f"<{name}"
+    close_pat = f"</{name}>"
+    depth = 0
+    i = start
+    n = len(html)
+    while i < n:
+        if lower.startswith(close_pat, i):
+            depth -= 1
+            if depth == 0:
+                return html[start : i + len(close_pat)]
+            i += len(close_pat)
+            continue
+        if lower.startswith(open_pat, i):
+            nxt = i + len(open_pat)
+            if nxt < n and html[nxt] in " \t\n\r/>":
+                gt = html.find(">", i)
+                if gt != -1 and html[gt - 1] == "/":
+                    i = gt + 1
+                    continue
+                depth += 1
+                i = nxt
+                continue
+        i += 1
+    return None
+
+
+def _html_blocks_with_class(html: str, token: str) -> list[str]:
+    token_l = token.lower()
+    blocks: list[str] = []
+    lower = html.lower()
+    pos = 0
+    while True:
+        idx = lower.find(token_l, pos)
+        if idx < 0:
+            break
+        start = html.rfind("<", 0, idx)
+        tag_end = html.find(">", start) if start >= 0 else -1
+        if start < 0 or tag_end < 0:
+            pos = idx + 1
+            continue
+        tag = html[start : tag_end + 1].lower()
+        if "class=" not in tag or token_l not in tag:
+            pos = idx + 1
+            continue
+        block = _match_balanced_tag(html, start)
+        if not block:
+            pos = tag_end + 1
+            continue
+        blocks.append(block)
+        pos = start + len(block)
+    return blocks
+
+
+def _inner_by_id_suffix(block: str, suffix: str) -> str:
+    match = re.search(rf'id="[^"]*{re.escape(suffix)}"', block, re.I)
+    if not match:
+        return ""
+    start = block.rfind("<", 0, match.start())
+    tagged = _match_balanced_tag(block, start)
+    if not tagged:
+        return ""
+    inner = tagged[tagged.find(">") + 1 :]
+    if inner.lower().endswith("</div>"):
+        inner = inner[: -len("</div>")]
+    return _strip_html(inner)
+
+
+def _event_from_card_block(block: str, sequence: int) -> CanonicalEvent | None:
+    status = _inner_by_id_suffix(block, "activityDesc")
+    date_text = _inner_by_id_suffix(block, "activityDateTz")
+    location = _inner_by_id_suffix(block, "placeFromDesc")
+    transport = _inner_by_id_suffix(block, "vessel")
+    return _event_from_fields(
+        status=status,
+        date_text=date_text,
+        location=location,
+        transport=transport,
+        sequence=sequence,
+    )
+
+
+def _parse_zim_cards(html: str) -> list[CanonicalEvent]:
+    events: list[CanonicalEvent] = []
+    seen: set[tuple] = set()
+
+    def add(event: CanonicalEvent | None) -> None:
+        if event is None:
+            return
+        key = (event.type, event.event_date, event.event_time, event.location_norm, event.raw_text)
+        if key in seen:
+            return
+        seen.add(key)
+        events.append(event)
+
+    for block in _html_blocks_with_class(html, "card-container-v2"):
+        head = re.split(r'class="[^"]*activity-card-holder', block, maxsplit=1, flags=re.I)[0]
+        add(_event_from_card_block(head, len(events)))
+    for block in _html_blocks_with_class(html, "card-container-activity"):
+        add(_event_from_card_block(block, len(events)))
+    return events
 
 
 def _event_from_fields(
@@ -216,6 +346,9 @@ def parse_zim_html(html: str) -> list[CanonicalEvent]:
     events = _parse_zim_tables(html)
     if events:
         return events
+    events = _parse_zim_cards(html)
+    if events:
+        return events
     for match in re.finditer(r"<script[^>]*>(.*?)</script>", html, re.S | re.I):
         blob = match.group(1).strip()
         if "unitActivityList" not in blob and "activityDesc" not in blob:
@@ -261,6 +394,9 @@ class ZimTracker(BaseTracker):
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
+        ".tracing-result-wrapper",
+        ".activity-card-holder",
+        "[class*='card-container-activity']",
         "table:has-text('Activity')",
         "[class*='unitActivity' i]",
         "[class*='track-shipment' i]",
@@ -379,11 +515,11 @@ class ZimTracker(BaseTracker):
             for token in (
                 "vessel departure",
                 "vessel arrived",
-                "activity",
+                "last activity",
                 "unit activity",
-                "loaded",
+                "container was loaded",
             )
-        ) and "insert b/l" not in text
+        )
 
     async def _wait_for_results(self) -> None:
         response_event = getattr(self.page, "_ct_zim_response_event", None)
@@ -393,7 +529,10 @@ class ZimTracker(BaseTracker):
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     return (
                         text.includes("vessel departure") ||
+                        text.includes("last activity") ||
                         text.includes("unit activity") ||
+                        !!document.querySelector(".tracing-result-wrapper") ||
+                        !!document.querySelector(".card-container-activity") ||
                         !!document.querySelector("[class*='unitActivity']") ||
                         text.includes("no result") ||
                         text.includes("not found") ||
@@ -421,6 +560,19 @@ class ZimTracker(BaseTracker):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*waits, return_exceptions=True)
+
+    async def prepare_for_screenshot(self) -> None:
+        try:
+            await self.page.evaluate(
+                """() => {
+                    const root = document.querySelector(".tracing-result-wrapper")
+                        || document.querySelector(".activity-card-holder");
+                    if (root) root.scrollIntoView({ block: "start", inline: "nearest" });
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await super().prepare_for_screenshot()
 
     async def parse_events(self) -> list[CanonicalEvent]:
         captured = self._captured_tracking_json()

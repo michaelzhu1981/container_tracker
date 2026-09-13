@@ -28,6 +28,12 @@ def test_one_and_msc_event_types():
     assert classify_event_type("Export Empty Container Released") == "GTOT"
     assert classify_event_type("Laden Return") == "GTIN"
     assert classify_event_type("Departure") == "DEPA"
+    assert classify_event_type(
+        "Container was loaded at Port of Loading to Port of Discharge"
+    ) == "LOAD"
+    assert classify_event_type(
+        "Empty container dispatched from inland point to Customer"
+    ) == "GTOT"
 
 
 def test_parse_one_and_msc_dates():
