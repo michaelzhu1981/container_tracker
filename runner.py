@@ -326,6 +326,9 @@ class CarrierBrowser:
             await self.context.close()
         except Exception:  # noqa: BLE001
             LOGGER.info("Could not close %s browser context.", self.carrier)
+        else:
+            if self.headed:
+                LOGGER.info("Closed the Chrome window for %s.", self.carrier)
         self.context = None
         self.page = None
 
@@ -832,6 +835,7 @@ async def run_batch(
                                 ),
                             ),
                         )
+                    await session.close()
                     return
 
                 tracker_cls = TRACKERS[carrier]

@@ -393,6 +393,82 @@ async def test_run_batch_starts_headed_without_waiting_for_headless(
 
 
 @pytest.mark.asyncio
+async def test_headed_carrier_closes_browser_after_its_boxes(
+    tmp_path: Path, monkeypatch
+):
+    from models import TrackResult
+    from runner import run_batch
+
+    events: list[tuple[str, str]] = []
+
+    class FakePlaywright:
+        pass
+
+    class CM:
+        async def __aenter__(self):
+            return FakePlaywright()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeBrowser:
+        def __init__(self, playwright, carrier, **kwargs):
+            self.carrier = carrier
+            self.page = object()
+            self.on_challenge = None
+
+        async def start(self):
+            events.append(("start", self.carrier))
+
+        async def close(self):
+            events.append(("close", self.carrier))
+
+        async def ensure_open(self):
+            return None
+
+        def page_open(self):
+            return True
+
+    async def fake_track(page, carrier, container, **kwargs):
+        events.append(("query", carrier))
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    async def no_delay(seconds, cancel_event):
+        return False
+
+    async def no_prepare(_self):
+        return None
+
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: CM())
+    monkeypatch.setattr("runner.CarrierBrowser", FakeBrowser)
+    monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
+    monkeypatch.setattr("runner._track_one", fake_track)
+    monkeypatch.setattr("runner.sleep_or_cancel", no_delay)
+
+    rows = [
+        {"Container": "MSCU1234567", "Carrier": "MSCU", "extras": {}},
+        {"Container": "MSCU7654321", "Carrier": "MSCU", "extras": {}},
+        {"Container": "MSKU1234567", "Carrier": "MAEU", "extras": {}},
+    ]
+    results, _written = await run_batch(
+        rows, output_path=tmp_path / "out.xlsx", wait_for_challenge=False
+    )
+    assert len(results) == 3
+    mscu = [kind for kind, carrier in events if carrier == "MSCU"]
+    maeu = [kind for kind, carrier in events if carrier == "MAEU"]
+    assert mscu == ["start", "query", "query", "close"]
+    assert maeu == ["start", "query", "close"]
+    assert events.index(("close", "MSCU")) < events.index(("start", "MAEU"))
+
+
+@pytest.mark.asyncio
 async def test_carrier_worker_initializes_once_and_queries_serially(
     tmp_path: Path, monkeypatch
 ):

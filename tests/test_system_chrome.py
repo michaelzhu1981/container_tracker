@@ -15,6 +15,7 @@ from system_chrome import (
     capture_chrome_png,
     chrome_js,
     close_chrome_tabs,
+    close_chrome_windows,
     list_chrome_tab_urls,
     open_chrome_tab,
     stitch_pngs_vertically,
@@ -113,6 +114,53 @@ def test_close_chrome_tabs_keeps_entry_url(monkeypatch):
     monkeypatch.setattr("system_chrome.run_osascript", fake)
     assert close_chrome_tabs(host="oocl.com", keep_contains="cargotracking.aspx") == 1
     assert "cargotracking.aspx" in seen[0]
+
+
+def test_close_chrome_windows_targets_host_windows(monkeypatch):
+    seen: list[str] = []
+
+    def fake(source: str) -> str:
+        seen.append(source)
+        return "2"
+
+    monkeypatch.setattr("system_chrome.run_osascript", fake)
+    assert close_chrome_windows(host="cma-cgm.com") == 2
+    assert "cma-cgm.com" in seen[0]
+    assert "close (first window whose id is wid)" in seen[0]
+    assert "quit" not in seen[0].lower()
+
+
+def test_close_chrome_windows_returns_zero_when_chrome_is_gone(monkeypatch):
+    def boom(_source: str) -> str:
+        raise SystemChromeError("Google Chrome got an error: Application isn’t running.")
+
+    monkeypatch.setattr("system_chrome.run_osascript", boom)
+    assert close_chrome_windows(host="hapag-lloyd.com") == 0
+
+
+def test_system_chrome_page_close_closes_host_windows(monkeypatch):
+    import asyncio
+
+    closed: list[str] = []
+
+    def fake(*, host: str) -> int:
+        closed.append(host)
+        return 1
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("system_chrome.close_chrome_windows", fake)
+    monkeypatch.setattr("system_chrome.asyncio.sleep", no_sleep)
+    page = SystemChromePage(
+        "https://www.cma-cgm.com/ebusiness/tracking",
+        host="cma-cgm.com",
+        carrier="CMDU",
+        challenge_name="DataDome",
+    )
+    asyncio.run(page.close())
+    assert closed == ["cma-cgm.com"]
+    assert page.is_closed() is True
 
 
 def test_system_chrome_evaluate_passes_argument(monkeypatch):

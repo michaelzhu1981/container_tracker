@@ -294,6 +294,42 @@ def close_chrome_tab(url: str) -> bool:
         return False
 
 
+def close_chrome_windows(*, host: str) -> int:
+    """Close every Chrome window that has a tab for this host. Do not quit Chrome."""
+    host_lit = json.dumps(host)
+    source = f"""
+    tell application "Google Chrome"
+        set idsToClose to {{}}
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    if URL of t contains {host_lit} then
+                        set end of idsToClose to id of w
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        end repeat
+        set closedCount to 0
+        repeat with wid in idsToClose
+            try
+                close (first window whose id is wid)
+                set closedCount to closedCount + 1
+            end try
+        end repeat
+        return closedCount
+    end tell
+    """
+    try:
+        raw = run_osascript(source)
+    except SystemChromeError:
+        return 0
+    try:
+        return int(raw or 0)
+    except ValueError:
+        return 0
+
+
 def close_chrome_tabs(*, host: str, keep_contains: str | None = None) -> int:
     host_lit = json.dumps(host)
     keep_lit = json.dumps(keep_contains or "")
@@ -1171,3 +1207,11 @@ class SystemChromePage:
 
     async def close(self) -> None:
         self._closed = True
+        try:
+            closed = await asyncio.to_thread(close_chrome_windows, host=self._host)
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not close the Chrome window for %s.", self._carrier)
+            return
+        if closed:
+            LOGGER.info("Closed the Chrome window for %s.", self._carrier)
+        await asyncio.sleep(0.4)
