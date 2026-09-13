@@ -43,6 +43,13 @@ playwright install chromium
 查看每箱状态，并开始 / 结束任务（同一时间只能跑一批；点 Stop 会等当前箱查完）：
 
 ```bash
+./serve.sh
+```
+
+或手动激活虚拟环境后启动：
+
+```bash
+source .venv/bin/activate
 python app.py --serve
 ```
 
