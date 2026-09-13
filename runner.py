@@ -6,6 +6,8 @@ import asyncio
 import logging
 import random
 import subprocess
+import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from config import (
     CIRCUIT_BREAK_CODES,
     CIRCUIT_BREAK_STREAK,
     LOCALE,
+    MANUAL_CHROME_APPEAR_SECONDS,
+    MANUAL_CHROME_WAIT_SECONDS,
     NAV_TIMEOUT_MS,
     OUTPUT_XLSX,
     chrome_profile_dir,
@@ -33,6 +37,72 @@ from trackers import TRACKERS
 from validate import carrier_supported, container_shape_ok, iso6346_check_digit_ok
 
 LOGGER = logging.getLogger("container_tracker")
+
+
+def stdin_can_accept_enter() -> bool:
+    try:
+        return sys.stdin.isatty()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def chrome_commands_using_profile(profile: str) -> list[str]:
+    needle = f"--user-data-dir={Path(profile).resolve()}"
+    try:
+        output = subprocess.check_output(
+            ["ps", "-ax", "-o", "command="],
+            text=True,
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [line for line in output.splitlines() if needle in line]
+
+
+def wait_for_system_chrome_closed(
+    profile: str,
+    *,
+    timeout_s: float = MANUAL_CHROME_WAIT_SECONDS,
+    appear_s: float = MANUAL_CHROME_APPEAR_SECONDS,
+    poll_s: float = 1.0,
+) -> bool:
+    """True after a Chrome using this profile appears and then exits."""
+    appear_deadline = time.monotonic() + appear_s
+    while time.monotonic() < appear_deadline:
+        if chrome_commands_using_profile(profile):
+            break
+        time.sleep(poll_s)
+    else:
+        return False
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not chrome_commands_using_profile(profile):
+            time.sleep(min(0.8, poll_s))
+            if not chrome_commands_using_profile(profile):
+                return True
+        time.sleep(poll_s)
+    return False
+
+
+def wait_for_human_after_chrome_handoff(profile: str, *, reopen: bool = False) -> bool:
+    prompt = (
+        "Press Enter..."
+        if reopen
+        else "Press Enter after the search box is visible and you have closed Chrome..."
+    )
+    if stdin_can_accept_enter():
+        try:
+            input(prompt)
+            return True
+        except EOFError:
+            print("No terminal input. Waiting for you to close Google Chrome...")
+    else:
+        print("No terminal input. Complete the check in Google Chrome, then close that window.")
+    if wait_for_system_chrome_closed(profile):
+        return True
+    print("Timed out waiting for the system Chrome window to close.")
+    return False
 
 
 class CarrierBrowser:
@@ -125,15 +195,21 @@ class CarrierBrowser:
             LOGGER.info("Could not open system Chrome: %s", exc)
             await self.start()
             return False
-        await asyncio.to_thread(
-            input,
-            "Press Enter after the search box is visible and you have closed Chrome...",
-        )
+        profile = str(chrome_profile_dir(self.carrier).resolve())
+        if not await asyncio.to_thread(wait_for_human_after_chrome_handoff, profile):
+            try:
+                await self.start()
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Could not reopen %s after a failed Chrome handoff.", self.carrier)
+            return False
         try:
             await self.start()
         except Exception:  # noqa: BLE001
             print("Could not reopen the profile. Close Google Chrome, then press Enter again.")
-            await asyncio.to_thread(input, "Press Enter...")
+            if not await asyncio.to_thread(
+                wait_for_human_after_chrome_handoff, profile, reopen=True
+            ):
+                return False
             await self.start()
         if url and self.page is not None:
             try:

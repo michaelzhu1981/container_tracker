@@ -1,5 +1,13 @@
+from pathlib import Path
+
 from config import chrome_profile_dir, default_headed_for, query_delay_seconds
-from runner import should_relaunch_browser_per_box, update_circuit
+from runner import (
+    chrome_commands_using_profile,
+    should_relaunch_browser_per_box,
+    update_circuit,
+    wait_for_human_after_chrome_handoff,
+    wait_for_system_chrome_closed,
+)
 from cli import build_parser
 
 
@@ -41,3 +49,53 @@ def test_cli_no_wait_challenge_flag():
     assert args.no_wait_challenge is True
     default = parser.parse_args([])
     assert default.no_wait_challenge is False
+
+
+def test_chrome_commands_using_profile(monkeypatch):
+    profile = Path("/tmp/sessions/chrome_hlcu")
+    needle = f"--user-data-dir={profile.resolve()}"
+
+    def fake_ps(*args, **kwargs):
+        return (
+            f"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome {needle} https://x\n"
+            "other process\n"
+        )
+
+    monkeypatch.setattr("runner.subprocess.check_output", fake_ps)
+    assert chrome_commands_using_profile(str(profile))
+
+
+def test_wait_for_system_chrome_closed_after_exit(monkeypatch):
+    calls = {"n": 0}
+
+    def fake(_profile):
+        calls["n"] += 1
+        return ["chrome"] if calls["n"] < 3 else []
+
+    monkeypatch.setattr("runner.chrome_commands_using_profile", fake)
+    assert wait_for_system_chrome_closed("/x", timeout_s=2, appear_s=2, poll_s=0.01)
+
+
+def test_wait_for_system_chrome_closed_never_starts(monkeypatch):
+    monkeypatch.setattr("runner.chrome_commands_using_profile", lambda _p: [])
+    assert (
+        wait_for_system_chrome_closed("/x", timeout_s=1, appear_s=0.03, poll_s=0.01)
+        is False
+    )
+
+
+def test_handoff_without_tty_waits_for_chrome_close(monkeypatch):
+    monkeypatch.setattr("runner.stdin_can_accept_enter", lambda: False)
+    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p: True)
+    assert wait_for_human_after_chrome_handoff("/tmp/profile") is True
+
+
+def test_handoff_eof_falls_back_to_chrome_close(monkeypatch):
+    monkeypatch.setattr("runner.stdin_can_accept_enter", lambda: True)
+
+    def boom(_prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", boom)
+    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p: True)
+    assert wait_for_human_after_chrome_handoff("/tmp/profile") is True
