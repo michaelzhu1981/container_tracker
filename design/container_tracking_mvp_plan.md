@@ -357,7 +357,7 @@ Carrier 枚举：`HLCU` | `YMJA` | `ONEY` | `MAEU` | `MSCU` | `CMDU`
 
 列名与输出标准列冲突（`Status`、`Loaded`、`ATD`、`POL` 等）时，透传改名为 `{Column}_input`。
 
-重复行：默认按行序都查。`--dedupe` 按 `Container+Carrier` 保留首行。
+重复行：读入时按 `Container+Carrier` 去重，保留首行。然后按船公司分组再查（同一家连续查完）。不提供按原始行全查。
 
 文字样例（不是第二份 xlsx）：
 
@@ -463,7 +463,7 @@ python app.py --carrier HLCU --container HLXU1234567
 python app.py input/containers.xlsx
 ```
 
-公共参数：`--headed` `--limit` `--carriers` `--resume` `--output` `--dedupe`
+公共参数：`--headed` `--limit` `--carriers` `--resume` `--output`
 
 终端样例：
 
@@ -514,7 +514,7 @@ Output: output/containers_result.xlsx
 
 ### 6.1 运行方式
 
-- 一个 Browser；Excel `groupby("Carrier")` 后**顺序**查询；不并发
+- 一个 Browser；读入先按 `Container+Carrier` 去重，再 `groupby("Carrier")` 后**顺序**查询；不并发
 - 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU）默认 headed + 持久资料目录
 - Cookie Banner 用选择器自动关
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**

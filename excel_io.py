@@ -36,7 +36,7 @@ def _canonical_header(name: str) -> str:
     return mapped
 
 
-def read_input(path: Path, *, dedupe: bool = False) -> list[dict]:
+def read_input(path: Path) -> list[dict]:
     if path.suffix.lower() != ".xlsx":
         raise ExcelReadError("Input must be an .xlsx file.")
     if not path.exists():
@@ -84,11 +84,19 @@ def read_input(path: Path, *, dedupe: bool = False) -> list[dict]:
             "carrier_ok": carrier_supported(carrier),
         }
         key = (container, carrier)
-        if dedupe and key in seen:
+        if key in seen:
             continue
         seen.add(key)
         rows.append(item)
     return rows
+
+
+def order_rows_by_carrier(rows: list[dict]) -> list[dict]:
+    """Keep first-seen carrier order; consecutive boxes of the same carrier."""
+    by_carrier: dict[str, list[dict]] = {}
+    for row in rows:
+        by_carrier.setdefault(row["Carrier"], []).append(row)
+    return [row for group in by_carrier.values() for row in group]
 
 
 def result_to_cells(result: TrackResult | None) -> dict[str, str]:

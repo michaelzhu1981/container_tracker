@@ -9,7 +9,13 @@ from pathlib import Path
 
 from artifacts import relative_to_root
 from config import HEADLESS, INPUT_XLSX, OUTPUT_XLSX, ROOT, SUPPORTED_CARRIERS
-from excel_io import ExcelReadError, build_output_frame, read_input, write_output
+from excel_io import (
+    ExcelReadError,
+    build_output_frame,
+    order_rows_by_carrier,
+    read_input,
+    write_output,
+)
 from runner import configure_logging, print_progress, print_summary, run_batch, run_single
 from validate import normalize_carrier, normalize_container
 
@@ -61,11 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reuse SAILED rows from the existing result file.",
     )
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument(
-        "--dedupe",
-        action="store_true",
-        help="Keep the first row per Container+Carrier.",
-    )
     return parser
 
 
@@ -110,13 +111,14 @@ def main(argv: list[str] | None = None) -> int:
     if not input_path.is_absolute():
         input_path = (ROOT / input_path).resolve()
     try:
-        rows = read_input(input_path, dedupe=args.dedupe)
+        rows = read_input(input_path)
     except ExcelReadError as exc:
         print(str(exc))
         return 2
     if args.carriers:
         allow = {c.strip().upper() for c in args.carriers.split(",") if c.strip()}
         rows = [row for row in rows if row["Carrier"] in allow]
+    rows = order_rows_by_carrier(rows)
     if args.limit is not None:
         rows = rows[: args.limit]
     if not rows:
