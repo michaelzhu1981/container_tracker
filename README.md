@@ -36,7 +36,7 @@ playwright install chromium
 
 也接受表头别名，例如 `箱号` / `集装箱号` / `船公司` / `SCAC`。多余列会原样带到结果表。
 
-读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` / `COSU` 若在输入中则并行（默认可无头），同时有头船公司按 `MSCU` → `MAEU` → `HLCU` → `CMDU` → `OOLU` → `ZIMU` → `HDMU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
+读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` / `COSU` 若在输入中则并行（默认可无头），同时有头船公司按 `OOLU` → `MSCU` → `MAEU` → `HLCU` → `CMDU` → `HDMU` → `ZIMU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
 
 ## 本地网页控制台
 

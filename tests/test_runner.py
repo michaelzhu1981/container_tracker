@@ -326,7 +326,7 @@ def test_carrier_schedule_lanes_overlap_headless_and_headed():
     assert carrier_schedule_lanes(["ONEY"]) == (["ONEY"], [])
     assert carrier_schedule_lanes(["HDMU", "COSU", "OOLU", "ZIMU"]) == (
         ["COSU"],
-        ["OOLU", "ZIMU", "HDMU"],
+        ["OOLU", "HDMU", "ZIMU"],
     )
 
 
