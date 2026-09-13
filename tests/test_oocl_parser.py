@@ -8,6 +8,7 @@ from trackers.oocl import (
     OoclTracker,
     _SEARCH_FIELD_SELECTORS,
     _SUBMIT_BUTTON_SELECTORS,
+    is_oocl_entry_url,
     is_oocl_site_error_page,
     parse_oocl_html,
 )
@@ -99,6 +100,19 @@ def test_site_404_is_navigation_not_container_miss():
 def test_search_clicks_cargo_tracking_button():
     assert "#container_btn" in _SUBMIT_BUTTON_SELECTORS
     assert "#SEARCH_NUMBER" not in _SUBMIT_BUTTON_SELECTORS
+
+
+def test_oocl_uses_system_chrome_like_cmdu():
+    assert OoclTracker.use_system_chrome is True
+    assert OoclTracker.wait_in_current_browser is True
+    assert OoclTracker.system_chrome_host == "oocl.com"
+    assert OoclTracker.system_chrome_challenge == "CAPTCHA"
+    assert is_oocl_entry_url(
+        "https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx"
+    )
+    assert not is_oocl_entry_url(
+        "https://www.oocl.com/Pages/cargotracking/result?number=TCNU1971808"
+    )
 
 
 @pytest.mark.asyncio
@@ -221,3 +235,142 @@ async def test_search_without_field_is_selector_not_express_link():
         await OoclTracker(Page()).search("TCNU1971808")
     assert exc.value.code == "SELECTOR"
     assert not any("ExpressLink" in url for url in gotos)
+
+
+@pytest.mark.asyncio
+async def test_search_adopts_new_result_tab():
+    class Locator:
+        def __init__(self, selector: str, page: "Page"):
+            self.selector = selector
+            self.page = page
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "#SEARCH_NUMBER" in self.selector or "#container_btn" in self.selector
+
+        async def click(self, **kwargs):
+            if "#container_btn" in self.selector:
+                self.page.context.pages.append(self.page.result)
+
+        async def fill(self, value):
+            return None
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def scroll_into_view_if_needed(self):
+            return None
+
+        async def inner_text(self):
+            return "Container #"
+
+        async def select_option(self, **kwargs):
+            return None
+
+    class Keyboard:
+        async def press(self, key):
+            return None
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+
+    class Page:
+        def __init__(self, url: str, context: Context):
+            self.url = url
+            self.context = context
+            self.keyboard = Keyboard()
+            self.result = None
+            self._closed = False
+
+        def is_closed(self):
+            return self._closed
+
+        async def close(self):
+            self._closed = True
+            if self in self.context.pages:
+                self.context.pages.remove(self)
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        def locator(self, selector):
+            return Locator(selector, self)
+
+        async def evaluate(self, script, arg=None):
+            return ""
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    context = Context()
+    entry = Page(
+        "https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx",
+        context,
+    )
+    result = Page("https://www.oocl.com/Pages/ct/result?n=TCNU1971808", context)
+    entry.result = result
+    context.pages = [entry]
+    tracker = OoclTracker(entry)
+    await tracker.search("TCNU1971808")
+    assert tracker.page is result
+    assert result in context.pages
+
+
+@pytest.mark.asyncio
+async def test_return_to_entry_closes_result_tab():
+    class Locator:
+        def __init__(self):
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return False
+
+        async def click(self, **kwargs):
+            return None
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+
+    class Page:
+        def __init__(self, url: str, context: Context):
+            self.url = url
+            self.context = context
+            self._closed = False
+
+        def is_closed(self):
+            return self._closed
+
+        async def close(self):
+            self._closed = True
+            if self in self.context.pages:
+                self.context.pages.remove(self)
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        def locator(self, selector):
+            return Locator()
+
+        async def evaluate(self, script, arg=None):
+            return ""
+
+    context = Context()
+    entry = Page(
+        "https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx",
+        context,
+    )
+    result = Page("https://www.oocl.com/Pages/ct/result?n=TCNU1971808", context)
+    context.pages = [entry, result]
+    tracker = OoclTracker(result)
+    tracker._entry_page = entry
+    tracker._result_urls = [result.url]
+    await tracker._return_to_entry()
+    assert tracker.page is entry
+    assert result._closed is True
+    assert result not in context.pages
+    assert entry in context.pages

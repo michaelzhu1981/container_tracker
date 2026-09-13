@@ -14,7 +14,7 @@
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
 | `MAEU` | Maersk | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成 |
 | `CMDU` | CMA CGM | 已实现；用本机普通 Chrome（不用 Playwright）过人机验证后批量查箱。还箱超过约 15 天可能无结果 |
-| `OOLU` | OOCL | 已实现；Cargo Tracking 表单查询；验证码在当前窗口等待完成 |
+| `OOLU` | OOCL | 已实现；用本机普通 Chrome 过人机验证。每箱会新开结果页签，查完关掉后回到入口页再查下一箱 |
 | `HDMU` | HMM | 已实现；用本机普通 Chrome 过 Access Denied / abnormal connection 后批量查箱。箱号前缀可以不是 HDMU，Carrier 仍填 `HDMU` |
 | `COSU` | COSCO | 已实现；默认无头。解析 SCCT 动态节点表 |
 | `ZIMU` | ZIM | 已实现；Track a Shipment；hCaptcha 在当前窗口等待完成 |
@@ -52,12 +52,12 @@ python app.py --serve
 
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
-- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。HLCU / CMDU / HDMU 打开本机普通 Chrome，等人过验证后保持窗口打开并批量查该家剩余箱；MAEU / OOLU / ZIMU 在当前自动化窗口等待；MSCU 交给普通系统 Chrome 后需退出再继续。关掉则自动失败并可能熔断该家
+- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。HLCU / CMDU / OOLU / HDMU 打开本机普通 Chrome，等人过验证后保持窗口打开并批量查该家剩余箱；MAEU / ZIMU 在当前自动化窗口等待；MSCU 交给普通系统 Chrome 后需退出再继续。关掉则自动失败并可能熔断该家
 - **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU / OOLU / ZIMU / HDMU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页会显示验证码等待状态和对应操作。HLCU / CMDU / HDMU：在本机普通 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。MAEU / OOLU / ZIMU 在当前自动化窗口等待。MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
+网页会显示验证码等待状态和对应操作。HLCU / CMDU / OOLU / HDMU：在本机普通 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。OOLU 每箱会打开结果页签，查完后关掉该页签，回到 Cargo Tracking 入口页输入下一箱（后续箱通常不再验证）。MAEU / ZIMU 在当前自动化窗口等待。MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
 
 ## 命令行
 
@@ -101,7 +101,7 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 ## 结果
 
-结果写入 `output/containers_result.xlsx`，默认每完成 5 箱或每 10 秒批量保存一次，停止或结束任务时强制保存。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。HLCU / CMDU 都拍本机 Chrome 真实窗口，不再用手动画页面。完整 HTML 在 `logs/html/`。
+结果写入 `output/containers_result.xlsx`，默认每完成 5 箱或每 10 秒批量保存一次，停止或结束任务时强制保存。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。HLCU / CMDU / OOLU 都拍本机 Chrome 真实窗口，不再用手动画页面。完整 HTML 在 `logs/html/`。
 
 输出列：`Container` `Carrier` `POL` `Status` `Loaded` `Sailed` `Vessel` `Voyage` `ATD` `Latest Event` `Checked At` `Check Result` `Error Code` `Error` `Screenshot`。
 
@@ -123,7 +123,7 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 1. 只识别验证提示或可见验证 iframe；Cookie 说明里的 `.hcaptcha.com`、SDK 脚本和隐藏组件不算挑战。
 2. 先等最多 25 秒，让非交互 JS 挑战自行消失。
-3. HLCU / CMDU / HDMU 打开本机普通 Google Chrome（无远程调试）。在该窗口完成 Cloudflare / DataDome / HMM Access Denied，**不要关闭**。最多等 10 分钟；通过后批量查箱。若 Chrome 提示，打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。MAEU 仍在当前自动化窗口等待。Stop 可取消等待。
+3. HLCU / CMDU / OOLU / HDMU 打开本机普通 Google Chrome（无远程调试）。在该窗口完成 Cloudflare / DataDome / CAPTCHA / HMM Access Denied，**不要关闭入口窗口**。最多等 10 分钟；通过后批量查箱。OOLU 每箱的结果页签查完后会关掉，下一箱从入口页继续。若 Chrome 提示，打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。MAEU 仍在当前自动化窗口等待。Stop 可取消等待。
 4. MSCU 仍使用普通系统 Chrome 交接：完成验证、出现搜索框后退出该 Chrome，程序重新打开同一资料目录查询。
 5. 每箱最多进入一次人工验证流程；验证后再次被拦则记录失败。无人值守遇到 CAPTCHA 不反复刷新；连续两箱被拦会停止该家剩余查询。
 

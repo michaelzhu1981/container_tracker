@@ -10,7 +10,11 @@ from system_chrome import (
     _parse_rect,
     _rect_inside,
     _screenshot_root_js,
+    _tab_match_clause,
     capture_chrome_png,
+    chrome_js,
+    close_chrome_tabs,
+    list_chrome_tab_urls,
     write_png_data_url,
 )
 
@@ -49,6 +53,70 @@ def test_screenshot_root_prefers_tracking_section():
     assert "#gridTrackingDetails" in scoped
     hapag = _screenshot_root_js(".hal-event-tracking")
     assert ".hal-event-tracking" in hapag
+
+
+def test_tab_helpers_read_and_filter_urls(monkeypatch):
+    monkeypatch.setattr(
+        "system_chrome.run_osascript",
+        lambda src: "https://www.oocl.com/a\nhttps://www.cma-cgm.com/b\n",
+    )
+    assert list_chrome_tab_urls() == [
+        "https://www.oocl.com/a",
+        "https://www.cma-cgm.com/b",
+    ]
+    assert list_chrome_tab_urls(host="oocl.com") == ["https://www.oocl.com/a"]
+    assert "tabURL is" in _tab_match_clause(
+        host="oocl.com", tab_url="https://www.oocl.com/result"
+    )
+    assert "oocl.com" in _tab_match_clause(host="oocl.com")
+
+
+def test_chrome_js_can_target_a_specific_tab(monkeypatch):
+    seen: list[str] = []
+
+    def fake(source: str) -> str:
+        seen.append(source)
+        return '"ok"'
+
+    monkeypatch.setattr("system_chrome.run_osascript", fake)
+    assert chrome_js("() => 1", host="oocl.com", tab_url="https://www.oocl.com/result") == "ok"
+    assert "www.oocl.com/result" in seen[0]
+
+
+def test_close_chrome_tabs_keeps_entry_url(monkeypatch):
+    seen: list[str] = []
+
+    def fake(source: str) -> str:
+        seen.append(source)
+        return "1"
+
+    monkeypatch.setattr("system_chrome.run_osascript", fake)
+    assert close_chrome_tabs(host="oocl.com", keep_contains="cargotracking.aspx") == 1
+    assert "cargotracking.aspx" in seen[0]
+
+
+def test_system_chrome_evaluate_passes_argument(monkeypatch):
+    seen: list[str] = []
+
+    def fake(script, *, host, tab_url=None):
+        seen.append(script)
+        return "cont"
+
+    monkeypatch.setattr("system_chrome.chrome_js", fake)
+    page = SystemChromePage(
+        "https://www.oocl.com/track",
+        host="oocl.com",
+        carrier="OOLU",
+        challenge_name="CAPTCHA",
+    )
+
+    async def run():
+        return await page.evaluate("(value) => value", "cont")
+
+    import asyncio
+
+    assert asyncio.run(run()) == "cont"
+    assert "cont" in seen[0]
 
 
 def test_system_chrome_page_keeps_carrier_labels():

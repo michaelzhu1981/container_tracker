@@ -30,6 +30,7 @@ def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("COSU") is False
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("HDMU") is True
+    assert uses_system_chrome("OOLU") is True
     assert uses_system_chrome("MAEU") is False
     assert uses_system_chrome("HLCU") is True
     hlcu = system_chrome_settings("HLCU")
@@ -41,6 +42,10 @@ def test_cmdu_unlocks_in_current_browser():
     hdmu = system_chrome_settings("HDMU")
     assert hdmu["host"] == "hmm21.com"
     assert hdmu["challenge_name"] == "HMM access check"
+    oolu = system_chrome_settings("OOLU")
+    assert oolu["host"] == "oocl.com"
+    assert oolu["challenge_name"] == "CAPTCHA"
+    assert "cargotracking.aspx" in oolu["url"]
 
 
 def test_hlcu_does_not_relaunch_browser_per_box():

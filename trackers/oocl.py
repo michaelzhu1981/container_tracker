@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -58,6 +60,9 @@ _SUBMIT_BUTTON_SELECTORS = (
     "button:has-text('Search')",
     "input[value='Search']",
 )
+_ENTRY_URL_MARKERS = ("cargotracking.aspx",)
+_RESULT_HOSTS = ("oocl.com", "cargosmart.com")
+_BLANK_URLS = ("", "about:blank", "chrome://newtab")
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -205,6 +210,30 @@ def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
     return events
 
 
+def is_oocl_entry_url(url: str) -> bool:
+    blob = (url or "").lower()
+    return any(marker in blob for marker in _ENTRY_URL_MARKERS)
+
+
+def _is_blank_url(url: str) -> bool:
+    return (url or "").strip().lower() in _BLANK_URLS
+
+
+def _is_related_tab(url: str) -> bool:
+    blob = (url or "").lower()
+    return any(host in blob for host in _RESULT_HOSTS)
+
+
+def _page_is_closed(page: object) -> bool:
+    checker = getattr(page, "is_closed", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:  # noqa: BLE001
+            return True
+    return page is None
+
+
 def is_oocl_site_error_page(text: str, html: str = "") -> bool:
     """True for OOCL's own 404 / removed-page shell, not a container miss."""
     blob = f"{text}\n{html}".lower()
@@ -236,6 +265,9 @@ def parse_oocl_html(html: str) -> list[CanonicalEvent]:
 class OoclTracker(BaseTracker):
     carrier_code = "OOLU"
     wait_in_current_browser = True
+    use_system_chrome = True
+    system_chrome_host = "oocl.com"
+    system_chrome_challenge = "CAPTCHA"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
@@ -245,6 +277,11 @@ class OoclTracker(BaseTracker):
         "[class*='cargo-tracking' i]",
     )
 
+    def __init__(self, page, *, wait_for_challenge: bool = True, browser=None) -> None:
+        super().__init__(page, wait_for_challenge=wait_for_challenge, browser=browser)
+        self._entry_page = page
+        self._result_urls: list[str] = []
+
     async def _page_challenge_code(self) -> str | None:
         code = await super()._page_challenge_code()
         if code and await self._has_tracking_result():
@@ -252,6 +289,7 @@ class OoclTracker(BaseTracker):
         return code
 
     async def open_page(self) -> None:
+        await self._return_to_entry()
         if not await self.open_tracking_or_reuse("oocl.com"):
             return
         await self.dismiss_cookies(wait_ms=12_000)
@@ -353,6 +391,7 @@ class OoclTracker(BaseTracker):
 
     async def search(self, container: str) -> None:
         self._search_submitted = False
+        await self._focus_entry()
         await self.dismiss_cookies(wait_ms=0)
         await self._select_container_search()
         field = await self._first_visible_search_field()
@@ -366,29 +405,160 @@ class OoclTracker(BaseTracker):
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
-        await self._submit_search()
+        before = await self._tab_urls()
+        await self._click_search_button()
+        await self._adopt_result_tab(before)
         self._search_submitted = True
         await self._wait_for_results()
 
-    async def _submit_search(self) -> None:
-        button = self.page.locator(", ".join(_SUBMIT_BUTTON_SELECTORS))
-        clicked = False
-        try:
-            async with self.page.expect_popup(timeout=4_000) as popup_info:
-                await button.first.click(timeout=8_000)
-                clicked = True
-            self.page = await popup_info.value
+    async def _click_search_button(self) -> None:
+        for selector in _SUBMIT_BUTTON_SELECTORS:
+            button = self.page.locator(selector)
+            try:
+                if await button.first.is_visible(timeout=1_200):
+                    await button.first.click(timeout=8_000)
+                    return
+            except Exception:  # noqa: BLE001
+                continue
+        await self.page.keyboard.press("Enter")
+
+    async def _tab_urls(self) -> list[str]:
+        lister = getattr(self.page, "list_tab_urls", None)
+        if callable(lister):
+            try:
+                return [url for url in await lister() if _is_related_tab(url)]
+            except Exception:  # noqa: BLE001
+                return []
+        context = getattr(self.page, "context", None)
+        pages = getattr(context, "pages", None) or []
+        urls: list[str] = []
+        for extra in pages:
+            try:
+                url = extra.url or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if _is_related_tab(url) or extra is self.page:
+                urls.append(url)
+        return urls
+
+    async def _adopt_result_tab(self, before: list[str]) -> None:
+        can_see_tabs = callable(getattr(self.page, "list_tab_urls", None)) or getattr(
+            getattr(self.page, "context", None), "pages", None
+        ) is not None
+        if not can_see_tabs:
             return
-        except Exception:  # noqa: BLE001
-            if clicked:
+        prior = {url for url in before if not _is_blank_url(url)}
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if await self._focus_new_result(prior):
                 return
+            try:
+                await self.page.wait_for_timeout(300)
+            except Exception:  # noqa: BLE001
+                await asyncio.sleep(0.3)
+        # Same-tab navigation is still usable.
+
+    async def _focus_new_result(self, prior: set[str]) -> bool:
+        focus = getattr(self.page, "focus_tab", None)
+        if callable(focus):
+            now = await self._tab_urls()
+            new = [url for url in now if url not in prior and not _is_blank_url(url)]
+            if not new:
+                return False
+            chosen = new[-1]
+            self._result_urls.append(chosen)
+            await focus(chosen)
+            return True
+        context = getattr(self.page, "context", None)
+        pages = getattr(context, "pages", None) or []
+        extras = [
+            extra
+            for extra in pages
+            if extra is not self._entry_page
+            and not _page_is_closed(extra)
+            and (getattr(extra, "url", "") or "") not in prior
+            and not _is_blank_url(getattr(extra, "url", "") or "")
+        ]
+        if not extras:
+            return False
+        chosen = extras[-1]
+        self._result_urls.append(getattr(chosen, "url", "") or "")
+        self.page = chosen
+        return True
+
+    async def _focus_entry(self) -> None:
+        page = self._entry_page or self.page
+        if hasattr(page, "tab_url"):
+            page.tab_url = None
+        if page is not None and not _page_is_closed(page):
+            self.page = page
+        url = ""
         try:
-            if await button.first.is_visible(timeout=800):
-                await button.first.click(timeout=8_000)
-                return
+            url = self.page.url or ""
+        except Exception:  # noqa: BLE001
+            url = ""
+        if is_oocl_entry_url(url):
+            return
+        try:
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
         except Exception:  # noqa: BLE001
             pass
-        await self.page.keyboard.press("Enter")
+
+    async def _return_to_entry(self) -> None:
+        await self._close_result_tabs()
+        await self._focus_entry()
+
+    async def _close_result_tabs(self) -> None:
+        page = self._entry_page or self.page
+        closer = getattr(page, "close_tab", None)
+        if callable(closer):
+            for url in list(self._result_urls):
+                try:
+                    await closer(url)
+                except Exception:  # noqa: BLE001
+                    continue
+            sweep = getattr(page, "close_other_host_tabs", None)
+            if callable(sweep):
+                try:
+                    await sweep("cargotracking.aspx")
+                except Exception:  # noqa: BLE001
+                    pass
+            extra_close = getattr(page, "close_tab", None)
+            if extra_close:
+                for url in await self._tab_urls():
+                    if is_oocl_entry_url(url) or not _is_related_tab(url):
+                        continue
+                    try:
+                        await extra_close(url)
+                    except Exception:  # noqa: BLE001
+                        continue
+            if hasattr(page, "tab_url"):
+                page.tab_url = None
+            self._result_urls = []
+            if page is not None:
+                self.page = page
+            return
+        context = getattr(self.page, "context", None) or getattr(page, "context", None)
+        entry = self._entry_page or self.page
+        pages = getattr(context, "pages", None) or []
+        for extra in list(pages):
+            if extra is entry:
+                continue
+            try:
+                await extra.close()
+            except Exception:  # noqa: BLE001
+                continue
+        self._result_urls = []
+        if entry is not None and not _page_is_closed(entry):
+            self.page = entry
+
+    async def track(self, container: str, *, session_ready: bool = False):
+        self._entry_page = self.page
+        self._result_urls = []
+        try:
+            return await super().track(container, session_ready=session_ready)
+        finally:
+            await self._return_to_entry()
 
     async def _has_tracking_result(self) -> bool:
         try:
@@ -433,6 +603,7 @@ class OoclTracker(BaseTracker):
             pass
 
     async def parse_events(self) -> list[CanonicalEvent]:
+        await self._wait_for_results()
         html = await self.page.content()
         text = await self._visible_text()
         if is_oocl_site_error_page(text, html):

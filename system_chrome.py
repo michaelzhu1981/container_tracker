@@ -86,7 +86,14 @@ def open_chrome_window(url: str) -> None:
     )
 
 
-def chrome_js(script: str, *, host: str) -> Any:
+def _tab_match_clause(*, host: str, tab_url: str | None = None) -> str:
+    if tab_url:
+        target = json.dumps(tab_url)
+        return f"tabURL is {target} or tabURL contains {target}"
+    return f"tabURL contains {json.dumps(host)}"
+
+
+def chrome_js(script: str, *, host: str, tab_url: str | None = None) -> Any:
     wrapped = (
         "JSON.stringify((function(){ try { const r = "
         + _as_iife(script)
@@ -95,7 +102,7 @@ def chrome_js(script: str, *, host: str) -> Any:
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
         handle.write(wrapped)
         js_path = handle.name
-    host_lit = json.dumps(host)
+    match = _tab_match_clause(host=host, tab_url=tab_url)
     posix = json.dumps(js_path)
     source = f"""
     set jsPath to {posix}
@@ -107,7 +114,7 @@ def chrome_js(script: str, *, host: str) -> Any:
                 try
                     set tabURL to URL of t
                 end try
-                if tabURL contains {host_lit} then
+                if {match} then
                     return execute t javascript js
                 end if
             end repeat
@@ -170,6 +177,123 @@ def set_chrome_tab_url(url: str, *, host: str) -> None:
         run_osascript(source)
         return
     open_chrome_window(url)
+
+
+def list_chrome_tab_urls(*, host: str | None = None) -> list[str]:
+    source = """
+    tell application "Google Chrome"
+        set out to ""
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    set tabURL to URL of t
+                    if out is "" then
+                        set out to tabURL
+                    else
+                        set out to out & linefeed & tabURL
+                    end if
+                end try
+            end repeat
+        end repeat
+        return out
+    end tell
+    """
+    try:
+        raw = run_osascript(source)
+    except SystemChromeError:
+        return []
+    urls = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not host:
+        return urls
+    needle = host.lower()
+    return [url for url in urls if needle in url.lower()]
+
+
+def activate_chrome_tab(url: str) -> bool:
+    target = json.dumps(url)
+    source = f"""
+    tell application "Google Chrome"
+        repeat with w in windows
+            set tabIndex to 0
+            repeat with t in tabs of w
+                set tabIndex to tabIndex + 1
+                try
+                    set tabURL to URL of t
+                    if tabURL is {target} or tabURL contains {target} then
+                        set index of w to 1
+                        set active tab index of w to tabIndex
+                        activate
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return false
+    """
+    try:
+        return run_osascript(source).lower() == "true"
+    except SystemChromeError:
+        return False
+
+
+def close_chrome_tab(url: str) -> bool:
+    target = json.dumps(url)
+    source = f"""
+    tell application "Google Chrome"
+        repeat with w in windows
+            set tabList to tabs of w
+            repeat with i from (count of tabList) to 1 by -1
+                try
+                    set tabURL to URL of tab i of w
+                    if tabURL is {target} or tabURL contains {target} then
+                        close tab i of w
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return false
+    """
+    try:
+        return run_osascript(source).lower() == "true"
+    except SystemChromeError:
+        return False
+
+
+def close_chrome_tabs(*, host: str, keep_contains: str | None = None) -> int:
+    host_lit = json.dumps(host)
+    keep_lit = json.dumps(keep_contains or "")
+    skip_keep = "false" if keep_contains else "true"
+    source = f"""
+    tell application "Google Chrome"
+        set closedCount to 0
+        repeat with w in windows
+            set tabList to tabs of w
+            repeat with i from (count of tabList) to 1 by -1
+                try
+                    set tabURL to URL of tab i of w
+                    if tabURL contains {host_lit} then
+                        if {skip_keep} or tabURL does not contain {keep_lit} then
+                            close tab i of w
+                            set closedCount to closedCount + 1
+                        end if
+                    end if
+                end try
+            end repeat
+        end repeat
+        return closedCount
+    end tell
+    """
+    try:
+        raw = run_osascript(source)
+    except SystemChromeError:
+        return 0
+    try:
+        return int(raw or 0)
+    except ValueError:
+        return 0
 
 
 _DEFAULT_SHOT_ROOT_JS = """(document.querySelector("#trackingsearchsection")
@@ -505,6 +629,41 @@ class SystemLocator:
             }}"""
         )
 
+    async def inner_text(self) -> str:
+        text = await self.page.evaluate(
+            f"""() => {{
+                const el = {_find_element_js(self.selector)};
+                return el ? (el.innerText || el.textContent || "") : "";
+            }}"""
+        )
+        return str(text or "")
+
+    async def select_option(self, label: str | None = None, value: str | None = None, **kwargs) -> None:
+        wanted = value if value is not None else label
+        await self.page.evaluate(
+            f"""() => {{
+                const el = {_find_element_js(self.selector)};
+                if (!el || !el.options) return;
+                const wanted = {json.dumps(str(wanted or ""))}.toLowerCase();
+                for (const opt of el.options) {{
+                    const text = (opt.text || opt.label || "").toLowerCase();
+                    if ((opt.value || "").toLowerCase() === wanted || text.includes(wanted)) {{
+                        el.value = opt.value;
+                        el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                        return;
+                    }}
+                }}
+            }}"""
+        )
+
+    async def scroll_into_view_if_needed(self) -> None:
+        await self.page.evaluate(
+            f"""() => {{
+                const el = {_find_element_js(self.selector)};
+                if (el) el.scrollIntoView({{ block: "center", inline: "nearest" }});
+            }}"""
+        )
+
     async def fill(self, value: str, force: bool = False) -> None:
         await self.page.evaluate(
             f"""() => {{
@@ -580,6 +739,7 @@ class SystemChromePage:
         self.appear_s = appear_s
         self.keyboard = _Keyboard(self)
         self._closed = False
+        self.tab_url: str | None = None
 
     async def start(self) -> None:
         print()
@@ -631,6 +791,8 @@ class SystemChromePage:
 
     @property
     def url(self) -> str:
+        if self.tab_url:
+            return self.tab_url
         return chrome_tab_url(host=self._host)
 
     def is_closed(self) -> bool:
@@ -645,8 +807,31 @@ class SystemChromePage:
     def on(self, event: str, handler: Callable) -> None:
         return None
 
-    async def evaluate(self, script: str) -> Any:
-        return await asyncio.to_thread(chrome_js, script, host=self._host)
+    async def evaluate(self, script: str, arg: Any = None) -> Any:
+        if arg is not None:
+            script = f"((fn) => fn({json.dumps(arg)}))({script.strip()})"
+        return await asyncio.to_thread(
+            chrome_js, script, host=self._host, tab_url=self.tab_url
+        )
+
+    async def list_tab_urls(self) -> list[str]:
+        return await asyncio.to_thread(list_chrome_tab_urls)
+
+    async def focus_tab(self, url: str) -> None:
+        self.tab_url = url
+        await asyncio.to_thread(activate_chrome_tab, url)
+
+    async def close_tab(self, url: str) -> None:
+        await asyncio.to_thread(close_chrome_tab, url)
+        if self.tab_url == url:
+            self.tab_url = None
+
+    async def close_other_host_tabs(self, keep_contains: str) -> None:
+        await asyncio.to_thread(
+            close_chrome_tabs, host=self._host, keep_contains=keep_contains
+        )
+        if self.tab_url and keep_contains.lower() not in self.tab_url.lower():
+            self.tab_url = None
 
     async def content(self) -> str:
         html = await self.evaluate("() => document.documentElement.outerHTML")
@@ -689,6 +874,8 @@ class SystemChromePage:
     ) -> None:
         if not path:
             return
+        if self.tab_url:
+            await asyncio.to_thread(activate_chrome_tab, self.tab_url)
         await asyncio.to_thread(
             capture_chrome_png, path, host=self._host, selector=selector
         )
