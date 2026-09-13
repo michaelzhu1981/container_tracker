@@ -513,6 +513,70 @@ def test_discharge_at_other_port_without_departure_is_sailed():
     assert result.vessel == "MSC BETTINA"
 
 
+def test_long_ocean_voyage_keeps_export_load_when_inbound_voyage_changes():
+    """MSDU7659068: Haiphong 12E load, Savannah 12W discharge 47 days later."""
+    events = [
+        ev(
+            type="OTHER",
+            location_raw="Savannah, US",
+            event_date="2026-09-13",
+            sequence_index=0,
+            transport_mode="UNKNOWN",
+            raw_text="13/09/2026 | Full Available for Delivery | Savannah, US | LADEN",
+        ),
+        ev(
+            type="DISC",
+            location_raw="Savannah, US",
+            event_date="2026-09-13",
+            sequence_index=1,
+            vessel="ZIM MOUNT KILIMANJARO",
+            voyage="12W",
+            raw_text="13/09/2026 | Import Discharged from Vessel | Savannah, US | ZIM MOUNT KILIMANJARO 12W",
+        ),
+        ev(
+            type="LOAD",
+            location_raw="Haiphong, VN",
+            event_date="2026-07-28",
+            sequence_index=3,
+            vessel="ZIM MOUNT KILIMANJARO",
+            voyage="12E",
+            raw_text="28/07/2026 | Export Loaded on Vessel | Haiphong, VN | ZIM MOUNT KILIMANJARO 12E",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="Haiphong, VN",
+            event_date="2026-07-28",
+            sequence_index=3,
+            vessel="ZIM MOUNT KILIMANJARO",
+            voyage="12E",
+            raw_text="28/07/2026 | Export Loaded on Vessel | Haiphong, VN | ZIM MOUNT KILIMANJARO 12E",
+        ),
+        ev(
+            type="GTOT",
+            location_raw="Haiphong, VN",
+            event_date="2026-07-20",
+            sequence_index=5,
+            empty=True,
+            transport_mode="VESSEL",
+            raw_text="20/07/2026 | Empty to Shipper | Haiphong, VN | EMPTY",
+        ),
+    ]
+    result = evaluate(
+        events,
+        container="MSDU7659068",
+        carrier="MSCU",
+        timeline_order="newest_first",
+        checked_at="2026-09-13 21:06:41",
+    )
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol in {"HAIPHONG", "HAIPHONG VN"}
+    assert result.vessel == "ZIM MOUNT KILIMANJARO"
+    assert result.voyage == "12E"
+    assert result.atd == "2026-07-28"
+
+
 def test_same_port_discharge_without_departure_is_not_sailed():
     events = [
         ev(

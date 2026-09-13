@@ -101,3 +101,32 @@ def test_discharge_without_departure_is_sailed():
     assert result.vessel == "MSC BETTINA"
     assert result.voyage == "QX621W"
     assert result.pol == "SHANGHAI"
+
+
+def test_inbound_voyage_suffix_change_after_long_transit_is_sailed():
+    html = """
+    <div class="msc-flow-tracking__step">
+      <div class="msc-flow-tracking__cell--two"><span class="data-value">13/09/2026</span></div>
+      <div class="msc-flow-tracking__cell--three"><span class="data-value">Savannah, US</span></div>
+      <div class="msc-flow-tracking__cell--four"><span class="data-value">Import Discharged from Vessel</span></div>
+      <div class="msc-flow-tracking__cell--five"><span class="data-value">ZIM MOUNT KILIMANJARO 12W</span></div>
+    </div>
+    <div class="msc-flow-tracking__step">
+      <div class="msc-flow-tracking__cell--two"><span class="data-value">28/07/2026</span></div>
+      <div class="msc-flow-tracking__cell--three"><span class="data-value">Haiphong, VN</span></div>
+      <div class="msc-flow-tracking__cell--four"><span class="data-value">Export Loaded on Vessel</span></div>
+      <div class="msc-flow-tracking__cell--five"><span class="data-value">ZIM MOUNT KILIMANJARO 12E</span></div>
+    </div>
+    """
+    events = parse_msc_html(html)
+    result = evaluate(
+        events,
+        container="MSDU7659068",
+        carrier="MSCU",
+        timeline_order="newest_first",
+        checked_at="2026-09-13 21:06:41",
+    )
+    assert result.status == "SAILED"
+    assert result.pol in {"HAIPHONG", "HAIPHONG VN"}
+    assert result.vessel == "ZIM MOUNT KILIMANJARO"
+    assert result.atd == "2026-07-28"

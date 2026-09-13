@@ -190,6 +190,16 @@ def _events_from_locations(container: dict) -> list[CanonicalEvent]:
     return events
 
 
+def json_mentions_container(payload: object, container: str) -> bool:
+    """True when a tracking payload is for this box, not a leftover response."""
+    if not container:
+        return True
+    try:
+        return container.upper() in json.dumps(payload).upper()
+    except TypeError:
+        return True
+
+
 def parse_maersk_json(payload: object) -> list[CanonicalEvent]:
     """Parse synergy/tracking JSON or a nested copy of that payload."""
     events: list[CanonicalEvent] = []
@@ -332,9 +342,13 @@ class MaerskTracker(BaseTracker):
                 payload = await response.json()  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 return
-            if isinstance(payload, (dict, list)):
-                setattr(page, "_ct_maersk_json", payload)
-                event.set()
+            if not isinstance(payload, (dict, list)):
+                return
+            expected = getattr(page, "_ct_maersk_expected", None)
+            if expected and not json_mentions_container(payload, expected):
+                return
+            setattr(page, "_ct_maersk_json", payload)
+            event.set()
 
         page.on("response", handle)
         setattr(page, "_ct_maersk_bound", True)
@@ -348,6 +362,8 @@ class MaerskTracker(BaseTracker):
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self._bind_tracking_response()
+        if self.page is not None:
+            setattr(self.page, "_ct_maersk_expected", container)
         self._clear_captured_json()
         if await self._page_challenge_code():
             return
@@ -418,15 +434,11 @@ class MaerskTracker(BaseTracker):
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     return (
-                        text.includes("vessel departed") ||
-                        text.includes("vessel departure") ||
-                        text.includes("gate in full") ||
-                        text.includes("gate out empty") ||
-                        text.includes("empty return") ||
                         text.includes("cannot find") ||
                         text.includes("could not find") ||
+                        text.includes("couldn't find") ||
                         text.includes("no shipments") ||
-                        text.includes("not found") ||
+                        text.includes("no shipment found") ||
                         (DETECT_CHALLENGE)()
                     );
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),

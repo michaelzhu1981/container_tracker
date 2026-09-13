@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 
 from status_engine import evaluate
-from trackers.maersk import MaerskTracker, parse_maersk_html, parse_maersk_json
+from trackers.maersk import (
+    MaerskTracker,
+    json_mentions_container,
+    parse_maersk_html,
+    parse_maersk_json,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "maersk"
 
@@ -24,6 +29,34 @@ async def test_tracking_response_finishes_wait_without_dom_timeout():
     await asyncio.sleep(0)
     page._ct_maersk_response_event.set()
     await asyncio.wait_for(waiting, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_leftover_vessel_departure_does_not_finish_wait():
+    class Page:
+        def __init__(self):
+            self._ct_maersk_response_event = asyncio.Event()
+            self.dom_script = ""
+
+        async def wait_for_function(self, script, timeout=0, polling=None):
+            self.dom_script = script
+            await asyncio.Event().wait()
+
+    page = Page()
+    tracker = MaerskTracker(page)
+    tracker._search_submitted = True
+    waiting = asyncio.create_task(tracker._wait_for_results())
+    await asyncio.sleep(0.05)
+    assert not waiting.done()
+    assert "vessel departure" not in page.dom_script.lower()
+    page._ct_maersk_response_event.set()
+    await asyncio.wait_for(waiting, timeout=0.2)
+
+
+def test_json_mentions_container_ignores_other_box():
+    payload = {"containers": [{"container_num": "HASU4566923"}]}
+    assert json_mentions_container(payload, "HASU4566923")
+    assert not json_mentions_container(payload, "TRHU6217353")
 
 
 def test_parse_sailed_fixture():

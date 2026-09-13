@@ -129,7 +129,10 @@ def _cluster_by_gap(
         prev_d = _date_value(prev)
         cur_d = _date_value(event)
         if prev_d and cur_d and (cur_d - prev_d) > timedelta(days=30):
-            clusters.append([event])
+            if event.type in {"DISC", "ARRI"}:
+                clusters[-1].append(event)
+            else:
+                clusters.append([event])
         else:
             clusters[-1].append(event)
     latest_event = _latest(dated, timeline_order)
@@ -147,6 +150,26 @@ def _cluster_by_gap(
         chosen = chosen + undated
     chosen.sort(key=lambda e: e.sequence_index)
     return chosen
+
+
+def _destination_only_voyage_group(
+    latest_group: list[CanonicalEvent],
+    pool: list[CanonicalEvent],
+    timeline_order: TimelineOrder,
+) -> bool:
+    """True when the newest vessel/voyage is just POD discharge of an earlier load."""
+    if any(is_laden_ocean(event) and event.type == "LOAD" for event in latest_group):
+        return False
+    if not any(
+        event.classifier == "ACT" and event.type in {"DISC", "ARRI"}
+        for event in latest_group
+    ):
+        return False
+    loads = [event for event in pool if is_laden_ocean(event) and event.type == "LOAD"]
+    first_load = _earliest(loads, timeline_order)
+    return first_load is not None and implies_sailed_without_departure(
+        pool, first_load, timeline_order
+    )
 
 
 def _is_single_gap_cluster(
@@ -206,7 +229,10 @@ def select_latest_journey(
         # One booking can change vessel/voyage at transshipment. Do not drop the
         # origin Actual DEPA just because a later mother-vessel group exists.
         if voyage_grouped is not None and not _is_single_gap_cluster(pool, timeline_order):
-            grouped = voyage_grouped
+            if _destination_only_voyage_group(voyage_grouped, pool, timeline_order):
+                grouped = pool
+            else:
+                grouped = voyage_grouped
     if grouped is None:
         if not any(e.event_date for e in pool):
             return None

@@ -20,6 +20,41 @@ from challenges import CHALLENGE_CODE_JS
 from trackers.base import BaseTracker, TrackerError
 
 TRACK_URL = "https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking"
+_TOTAL_RESULT_RE = re.compile(r"total\s+(\d+)\s+result", re.I)
+
+ONE_RESULT_STATE_JS = """() => {
+    const text = (document.body && document.body.innerText) || "";
+    return {
+        text,
+        hasTable: !!document.querySelector("table[class*='EventTable']"),
+        hasDetail: !!document.querySelector("[class*='CargoTrackingDetail']"),
+        loading: /in progress/i.test(text),
+    };
+}"""
+
+
+def one_has_result(state: dict) -> bool:
+    """True when the page shows a real container hit, not Total 0 / empty."""
+    if state.get("hasTable") or state.get("hasDetail"):
+        return True
+    text = str(state.get("text") or "").lower()
+    match = _TOTAL_RESULT_RE.search(text)
+    if match and int(match.group(1)) > 0:
+        return True
+    return "loaded on vessel" in text
+
+
+def one_search_settled(state: dict) -> bool:
+    """True when loading finished and a table, a hit, or a settled miss is visible."""
+    if state.get("loading"):
+        return False
+    if one_has_result(state):
+        return True
+    text = str(state.get("text") or "").lower()
+    match = _TOTAL_RESULT_RE.search(text)
+    if match:
+        return True
+    return "没有查询结果" in text or "查无" in text
 
 _VOYAGE_RE = re.compile(r"\b(\d{2,4}[A-Z])\b", re.I)
 _EVENT_ROW_RE = re.compile(
@@ -339,15 +374,16 @@ class OneTracker(BaseTracker):
 
     async def _select_container_search(self) -> None:
         type_btn = self.page.locator(
+            "[class*='SearchContainer_select-title'], "
             "button:has-text('Container No.'), "
             "button:has-text('BL No.'), "
             "button:has-text('All')"
         )
         try:
-            if not await type_btn.first.is_visible(timeout=800):
+            if not await type_btn.first.is_visible(timeout=4_000):
                 return
             label = (await type_btn.first.inner_text()).strip().lower()
-            if "container" in label:
+            if "container" in label and "bl" not in label:
                 return
             await type_btn.first.click(timeout=3_000)
             option = self.page.get_by_role("option", name="Container No.")
@@ -377,6 +413,7 @@ class OneTracker(BaseTracker):
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
             await self.dismiss_onboarding()
+            await self._select_container_search()
             field = self.page.locator(
                 "input[placeholder*='Container' i], input[placeholder*='Search by' i]"
             )
@@ -414,37 +451,25 @@ class OneTracker(BaseTracker):
 
     async def _has_tracking_result(self) -> bool:
         try:
-            return bool(
-                await self.page.evaluate(
-                    """() => {
-                        const text = (document.body && document.body.innerText || "").toLowerCase();
-                        return (
-                            !!document.querySelector("table[class*='EventTable']") ||
-                            !!document.querySelector("[class*='CargoTrackingDetail']") ||
-                            /total\\s+\\d+\\s+result/.test(text) ||
-                            text.includes("loaded on vessel")
-                        );
-                    }"""
-                )
-            )
+            state = await self.page.evaluate(ONE_RESULT_STATE_JS)
         except Exception:  # noqa: BLE001
             return False
+        if isinstance(state, dict):
+            return one_has_result(state)
+        return bool(state)
 
     async def _wait_for_results(self) -> None:
         try:
             await self.page.wait_for_function(
                 """() => {
-                    const text = (document.body && document.body.innerText || "").toLowerCase();
-                    return (
-                        !!document.querySelector("table[class*='EventTable']") ||
-                        !!document.querySelector("[class*='CargoTrackingDetail']") ||
-                        /total\\s+\\d+\\s+result/.test(text) ||
-                        text.includes("no result") ||
-                        text.includes("not found") ||
-                        text.includes("没有查询结果") ||
-                        text.includes("查无") ||
-                        (DETECT_CHALLENGE)()
-                    );
+                    const text = (document.body && document.body.innerText) || "";
+                    const low = text.toLowerCase();
+                    if (/in progress/.test(low)) return false;
+                    if (document.querySelector("table[class*='EventTable']")) return true;
+                    if (document.querySelector("[class*='CargoTrackingDetail']")) return true;
+                    if (/total\\s+\\d+\\s+result/.test(low)) return true;
+                    if (low.includes("没有查询结果") || low.includes("查无")) return true;
+                    return (DETECT_CHALLENGE)();
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=20_000,
             )
@@ -457,6 +482,11 @@ class OneTracker(BaseTracker):
         if events:
             return events
         text = (await self._visible_text()).lower()
-        if "total 0 result" in text or "no result" in text or "not found" in text:
+        if "in progress" in text:
+            raise TrackerError("Tracking table was not found or could not be parsed.", "PARSE")
+        total = _TOTAL_RESULT_RE.search(text)
+        if total and int(total.group(1)) == 0:
+            raise TrackerError("No tracking result for this container.", "NO_RESULT")
+        if "no data found" in text:
             raise TrackerError("No tracking result for this container.", "NO_RESULT")
         raise TrackerError("Tracking table was not found or could not be parsed.", "PARSE")
