@@ -7,7 +7,7 @@ from trackers.base import TrackerError
 from trackers.zim import (
     TRACK_QUERY_URL,
     ZimTracker,
-    _CLEAR_CHIPS_JS,
+    _CLEAR_ALL_SELECTORS,
     _SEARCH_FIELD_SELECTORS,
     json_mentions_container,
     parse_zim_html,
@@ -146,9 +146,9 @@ async def test_search_stays_on_form_instead_of_query_url():
 
 
 @pytest.mark.asyncio
-async def test_search_clears_previous_chips_before_typing():
+async def test_search_clicks_clear_all_before_typing():
+    clicks: list[str] = []
     fills: list[str] = []
-    scripts: list[str] = []
     waits: list[str] = []
 
     class Locator:
@@ -157,10 +157,18 @@ async def test_search_clears_previous_chips_before_typing():
             self.first = self
 
         async def is_visible(self, timeout=0):
-            return "chips-input" in self.selector or "chips-search-button" in self.selector
+            return any(
+                token in self.selector
+                for token in (
+                    "chips-input",
+                    "chips-search-button",
+                    "Clear All",
+                    "clear-item",
+                )
+            )
 
         async def click(self, **kwargs):
-            return None
+            clicks.append(self.selector)
 
         async def fill(self, value):
             fills.append(value)
@@ -176,9 +184,8 @@ async def test_search_clears_previous_chips_before_typing():
             return None
 
         async def evaluate(self, script, arg=None):
-            scripts.append(script)
-            if "chips-item" in script or "Clear All" in script:
-                return "all"
+            if "chips-item:not(.clear-item)" in script and "click" not in script:
+                return True
             return ""
 
         async def wait_for_function(self, script, timeout=0):
@@ -189,8 +196,10 @@ async def test_search_clears_previous_chips_before_typing():
             return None
 
     await ZimTracker(Page()).search("ZCSU6809100")
-    assert any("chips-item" in script for script in scripts)
-    assert _CLEAR_CHIPS_JS in scripts
+    assert any(
+        "Clear All" in selector or "clear-item" in selector for selector in clicks
+    )
+    assert clicks[0] in _CLEAR_ALL_SELECTORS
     assert fills[-1] == "ZCSU6809100"
     assert any("ZCSU6809100" in script for script in waits)
 

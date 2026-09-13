@@ -51,29 +51,24 @@ _SUBMIT_BUTTON_SELECTORS = (
     "button:has-text('Search')",
     "button[type='submit']",
 )
-_CLEAR_CHIP_SELECTORS = (
+_CLEAR_ALL_SELECTORS = (
     "li.chips-item.clear-item a",
     "a:has-text('Clear All')",
     "li.chips-item.clear-item",
 )
-_CHIP_REMOVE_SELECTORS = (
-    "li.chips-item:not(.clear-item) .chips-icon",
-    "li.chips-item:not(.clear-item) img[alt*='Clear Chip' i]",
-)
-_CLEAR_CHIPS_JS = """() => {
-    const labeled = [...document.querySelectorAll("a, button, .clear-item")].find((el) =>
-        /clear\\s*all/i.test((el.innerText || el.textContent || "").replace(/\\s+/g, " "))
-    );
-    if (labeled) {
-        labeled.click();
-        return "all";
+_CLICK_CLEAR_ALL_JS = """() => {
+    const el = document.querySelector("li.chips-item.clear-item a")
+        || [...document.querySelectorAll("a, button")].find((node) =>
+            /clear\\s*all/i.test((node.innerText || node.textContent || "").replace(/\\s+/g, " "))
+        );
+    if (!el) return false;
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+    if (typeof el.focus === "function") el.focus();
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
     }
-    let removed = 0;
-    for (const icon of document.querySelectorAll("li.chips-item:not(.clear-item) .chips-icon")) {
-        icon.click();
-        removed += 1;
-    }
-    return removed;
+    if (typeof el.click === "function") el.click();
+    return true;
 }"""
 
 
@@ -507,30 +502,42 @@ class ZimTracker(BaseTracker):
                 continue
         return False
 
-    async def _clear_previous_search(self) -> None:
+    async def _has_search_chips(self) -> bool:
         try:
-            await self.page.evaluate(_CLEAR_CHIPS_JS)
+            return bool(
+                await self.page.evaluate(
+                    """() => !!document.querySelector("li.chips-item:not(.clear-item)")"""
+                )
+            )
         except Exception:  # noqa: BLE001
-            for selector in _CLEAR_CHIP_SELECTORS:
-                button = self.page.locator(selector)
-                try:
-                    if await button.first.is_visible(timeout=400):
-                        await button.first.click(timeout=3_000)
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-            else:
-                for selector in _CHIP_REMOVE_SELECTORS:
-                    icon = self.page.locator(selector)
-                    try:
-                        if await icon.first.is_visible(timeout=400):
-                            await icon.first.click(timeout=3_000)
-                    except Exception:  # noqa: BLE001
-                        continue
+            return False
+
+    async def _click_clear_all(self) -> bool:
+        for selector in _CLEAR_ALL_SELECTORS:
+            button = self.page.locator(selector)
+            try:
+                if await button.first.is_visible(timeout=1_200):
+                    await button.first.click(timeout=5_000)
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    async def _clear_previous_search(self) -> None:
+        if not await self._has_search_chips():
+            return
+        clicked = await self._click_clear_all()
+        if not clicked:
+            try:
+                clicked = bool(await self.page.evaluate(_CLICK_CLEAR_ALL_JS))
+            except Exception:  # noqa: BLE001
+                clicked = False
+        if not clicked:
+            return
         try:
             await self.page.wait_for_function(
                 """() => !document.querySelector("li.chips-item:not(.clear-item)")""",
-                timeout=3_000,
+                timeout=5_000,
             )
         except Exception:  # noqa: BLE001
             pass
