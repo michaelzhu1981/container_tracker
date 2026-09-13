@@ -1,9 +1,29 @@
+import asyncio
 from pathlib import Path
 
+import pytest
+
 from status_engine import evaluate
-from trackers.maersk import parse_maersk_html, parse_maersk_json
+from trackers.maersk import MaerskTracker, parse_maersk_html, parse_maersk_json
 
 FIXTURES = Path(__file__).parent / "fixtures" / "maersk"
+
+
+@pytest.mark.asyncio
+async def test_tracking_response_finishes_wait_without_dom_timeout():
+    class Page:
+        def __init__(self):
+            self._ct_maersk_response_event = asyncio.Event()
+
+        async def wait_for_function(self, *args, **kwargs):
+            await asyncio.Event().wait()
+
+    page = Page()
+    tracker = MaerskTracker(page)
+    waiting = asyncio.create_task(tracker._wait_for_results())
+    await asyncio.sleep(0)
+    page._ct_maersk_response_event.set()
+    await asyncio.wait_for(waiting, timeout=0.2)
 
 
 def test_parse_sailed_fixture():

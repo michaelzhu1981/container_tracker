@@ -17,9 +17,12 @@ from config import (
     CARRIER_TIMEOUT_MS,
     CIRCUIT_BREAK_CODES,
     CIRCUIT_BREAK_STREAK,
+    EXCEL_BATCH_SIZE,
+    EXCEL_FLUSH_SECONDS,
     LOCALE,
     MANUAL_CHROME_APPEAR_SECONDS,
     MANUAL_CHROME_WAIT_SECONDS,
+    MAX_PARALLEL_CARRIERS,
     NAV_TIMEOUT_MS,
     OUTPUT_XLSX,
     chrome_profile_dir,
@@ -175,12 +178,14 @@ class CarrierBrowser:
         headed: bool,
         allow_stdin: bool = True,
         should_abort: Callable[[], bool] | None = None,
+        manual_challenge_lock: asyncio.Lock | None = None,
     ) -> None:
         self.playwright = playwright
         self.carrier = carrier
         self.headed = headed
         self.allow_stdin = allow_stdin
         self.should_abort = should_abort
+        self.manual_challenge_lock = manual_challenge_lock
         self.on_challenge: Callable[[dict], None] | None = None
         self.context = None
         self.page = None
@@ -376,6 +381,28 @@ def _unlock_failed_result(row: dict, stamp: str, error_code: str) -> TrackResult
     )
 
 
+def _session_failed_result(
+    row: dict,
+    stamp: str,
+    error_code: str,
+    error: str,
+    *,
+    wait_for_challenge: bool,
+) -> TrackResult:
+    status = "CHECK_FAILED"
+    if wait_for_challenge and error_code in {"CAPTCHA", "CLOUDFLARE"}:
+        status = "MANUAL_CHECK_REQUIRED"
+    return evaluate(
+        [],
+        container=row["Container"],
+        carrier=row["Carrier"],
+        checked_at=stamp,
+        forced_status=status,
+        error_code=error_code,
+        error=error,
+    )
+
+
 def unlocks_in_current_browser(carrier: str) -> bool:
     tracker_cls = TRACKERS.get(carrier)
     return bool(tracker_cls and getattr(tracker_cls, "wait_in_current_browser", False))
@@ -529,15 +556,20 @@ async def _track_one(
     *,
     wait_for_challenge: bool = True,
     browser: CarrierBrowser | None = None,
+    tracker=None,
+    session_ready: bool = False,
 ) -> TrackResult:
-    tracker_cls = TRACKERS[carrier]
-    tracker = tracker_cls(
-        page, wait_for_challenge=wait_for_challenge, browser=browser
-    )
+    if tracker is None:
+        tracker_cls = TRACKERS[carrier]
+        tracker = tracker_cls(
+            page, wait_for_challenge=wait_for_challenge, browser=browser
+        )
+    else:
+        tracker.page = page
     LOGGER.info("Tracking %s %s", carrier, container)
     if container_shape_ok(container) and not iso6346_check_digit_ok(container):
         LOGGER.warning("ISO 6346 check digit failed for %s; querying anyway.", container)
-    return await tracker.track(container)
+    return await tracker.track(container, session_ready=session_ready)
 
 
 async def run_single(
@@ -578,6 +610,70 @@ def _cancelled(cancel_event: asyncio.Event | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
 
 
+class BatchCheckpointWriter:
+    """Serialize periodic workbook snapshots without blocking carrier workers."""
+
+    def __init__(
+        self,
+        path: Path,
+        rows: list[dict],
+        results: list[TrackResult | None],
+        *,
+        batch_size: int = EXCEL_BATCH_SIZE,
+        flush_seconds: float = EXCEL_FLUSH_SECONDS,
+    ) -> None:
+        self.path = path
+        self.rows = rows
+        self.results = results
+        self.batch_size = max(1, batch_size)
+        self.flush_seconds = max(0.1, flush_seconds)
+        self._dirty = 0
+        self._event = asyncio.Event()
+        self._closing = False
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> Path:
+        await self._flush()
+        self._task = asyncio.create_task(self._run())
+        return self.path
+
+    def mark_completed(self) -> None:
+        self._dirty += 1
+        if self._dirty >= self.batch_size:
+            self._event.set()
+
+    async def close(self) -> Path:
+        self._closing = True
+        self._event.set()
+        if self._task is not None:
+            await self._task
+            self._task = None
+        return self.path
+
+    async def _run(self) -> None:
+        while True:
+            timed_out = False
+            try:
+                await asyncio.wait_for(
+                    self._event.wait(), timeout=self.flush_seconds
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+            self._event.clear()
+            if self._dirty and (
+                self._closing or timed_out or self._dirty >= self.batch_size
+            ):
+                await self._flush()
+            if self._closing:
+                return
+
+    async def _flush(self) -> None:
+        snapshot = list(self.results)
+        self._dirty = 0
+        frame = build_output_frame(self.rows, snapshot)
+        self.path = await asyncio.to_thread(write_output, self.path, frame)
+
+
 async def run_batch(
     rows: list[dict],
     *,
@@ -612,233 +708,290 @@ async def run_batch(
             if cells and cells.get("Status") == "SAILED":
                 results[idx] = cells_to_result(row["Container"], row["Carrier"], cells)
                 skip_indices.add(idx)
-        occurrence = {}
 
-    written = write_output(output_path, build_output_frame(rows, results))
+    by_carrier: dict[str, list[int]] = defaultdict(list)
+    for idx, row in enumerate(rows):
+        if idx in skip_indices:
+            continue
+        if not container_shape_ok(row["Container"]) or not carrier_supported(
+            row["Carrier"]
+        ):
+            results[idx] = _invalid_result(row, checked_at())
+            continue
+        by_carrier[row["Carrier"]].append(idx)
 
-    async with async_playwright() as playwright:
-        by_carrier: dict[str, list[int]] = defaultdict(list)
-        for idx, row in enumerate(rows):
-            by_carrier[row["Carrier"]].append(idx)
+    writer = BatchCheckpointWriter(output_path, rows, results)
+    written = await writer.start()
 
-        first = True
-        cancelled = False
-        for carrier, indices in by_carrier.items():
-            if cancelled or _cancelled(cancel_event):
-                cancelled = True
-                break
-            if not carrier_supported(carrier):
-                for idx in indices:
-                    results[idx] = _invalid_result(rows[idx], checked_at())
-                    notify(
-                        {
-                            "index": idx,
-                            "total": total,
-                            "phase": "done",
-                            "result": results[idx],
-                        }
-                    )
-                written = write_output(written, build_output_frame(rows, results))
-                continue
-            session = CarrierBrowser(
-                playwright,
-                carrier,
-                headed=default_headed_for(carrier, headed),
-                allow_stdin=allow_stdin,
-                should_abort=lambda: _cancelled(cancel_event),
+    for idx, result in enumerate(results):
+        if result is not None:
+            notify(
+                {
+                    "index": idx,
+                    "total": total,
+                    "phase": "done",
+                    "result": result,
+                }
             )
-            try:
-                await session.start()
-            except SystemChromeError as exc:
-                LOGGER.info("Could not open system Chrome for %s: %s", carrier, exc)
-                print(str(exc))
-                pending = [idx for idx in indices if idx not in skip_indices]
-                if pending:
-                    first_idx = pending[0]
-                    results[first_idx] = _unlock_failed_result(
-                        rows[first_idx], checked_at(), "CAPTCHA"
+
+    def finish(idx: int, result: TrackResult) -> None:
+        results[idx] = result
+        print_progress(idx + 1, total, result)
+        notify(
+            {
+                "index": idx,
+                "total": total,
+                "phase": "done",
+                "result": result,
+            }
+        )
+        writer.mark_completed()
+
+    semaphore = asyncio.Semaphore(MAX_PARALLEL_CARRIERS)
+    manual_challenge_lock = asyncio.Lock()
+
+    try:
+        async with async_playwright() as playwright:
+
+            async def run_carrier(carrier: str, indices: list[int]) -> None:
+                async with semaphore:
+                    if _cancelled(cancel_event) or not indices:
+                        return
+                    session = CarrierBrowser(
+                        playwright,
+                        carrier,
+                        headed=default_headed_for(carrier, headed),
+                        allow_stdin=allow_stdin,
+                        should_abort=lambda: _cancelled(cancel_event),
+                        manual_challenge_lock=manual_challenge_lock,
                     )
-                    print_progress(first_idx + 1, total, results[first_idx])
-                    notify(
-                        {
-                            "index": first_idx,
-                            "total": total,
-                            "phase": "done",
-                            "result": results[first_idx],
-                        }
-                    )
-                    skip_indices.add(first_idx)
-                    for idx in pending[1:]:
-                        results[idx] = _paused_result(
-                            rows[idx],
-                            checked_at(),
-                            "CAPTCHA",
-                            reason=(
-                                f"Skipped remaining {carrier} rows; "
-                                "open Google Chrome, complete DataDome, and retry."
+                    first_idx = indices[0]
+                    try:
+                        await session.start()
+                    except SystemChromeError as exc:
+                        LOGGER.info(
+                            "Could not open system Chrome for %s: %s", carrier, exc
+                        )
+                        print(str(exc))
+                        finish(
+                            first_idx,
+                            _session_failed_result(
+                                rows[first_idx],
+                                checked_at(),
+                                "CAPTCHA",
+                                str(exc),
+                                wait_for_challenge=wait_for_challenge,
                             ),
                         )
-                        print_progress(idx + 1, total, results[idx])
-                        notify(
-                            {
-                                "index": idx,
-                                "total": total,
-                                "phase": "done",
-                                "result": results[idx],
-                            }
-                        )
-                    written = write_output(written, build_output_frame(rows, results))
-                continue
-            streak = 0
-            paused_code: str | None = None
-            paused_reason: str | None = None
-            try:
-                pending = [idx for idx in indices if idx not in skip_indices]
-                if wait_for_challenge and pending and unlocks_in_current_browser(carrier):
-                    first_idx = pending[0]
-                    session.on_challenge = lambda challenge, index=first_idx: notify({
-                        "index": index,
-                        "total": total,
-                        "phase": "challenge" if challenge.get("code") else "querying",
-                        "challenge": (
-                            {**challenge, "scope": "carrier"}
-                            if challenge.get("code")
-                            else None
-                        ),
-                        "result": None,
-                    })
-                    notify(
-                        {
-                            "index": first_idx,
-                            "total": total,
-                            "phase": "querying",
-                            "result": None,
-                        }
-                    )
-                    unlock_error = await unlock_carrier_session(
-                        session,
-                        carrier,
-                        wait_for_challenge=wait_for_challenge,
-                    )
-                    if unlock_error == "CANCELLED":
-                        cancelled = True
-                        break
-                    if unlock_error:
-                        results[first_idx] = _unlock_failed_result(
-                            rows[first_idx], checked_at(), unlock_error
-                        )
-                        print_progress(first_idx + 1, total, results[first_idx])
-                        notify(
-                            {
-                                "index": first_idx,
-                                "total": total,
-                                "phase": "done",
-                                "result": results[first_idx],
-                            }
-                        )
-                        written = write_output(
-                            written, build_output_frame(rows, results)
-                        )
-                        skip_indices.add(first_idx)
-                        paused_code = unlock_error
-                        paused_reason = (
-                            f"Skipped remaining {carrier} rows; complete "
-                            f"{unlock_error} in the current Chrome window, "
-                            "keep it open, and retry."
-                        )
-                for idx in indices:
-                    if _cancelled(cancel_event):
-                        cancelled = True
-                        break
-                    if idx in skip_indices:
-                        print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
-                        notify(
-                            {
-                                "index": idx,
-                                "total": total,
-                                "phase": "done",
-                                "result": results[idx],
-                            }
-                        )
-                        continue
-                    if paused_code:
-                        results[idx] = _paused_result(
-                            rows[idx],
-                            checked_at(),
-                            paused_code,
-                            reason=paused_reason,
-                        )
-                        print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
-                        notify(
-                            {
-                                "index": idx,
-                                "total": total,
-                                "phase": "done",
-                                "result": results[idx],
-                            }
-                        )
-                        written = write_output(written, build_output_frame(rows, results))
-                        continue
-                    if not first:
-                        delay = random.uniform(*query_delay_seconds(carrier))
-                        if await sleep_or_cancel(delay, cancel_event):
-                            cancelled = True
-                            break
-                    await session.ensure_open()
-                    first = False
-                    row = rows[idx]
-                    session.on_challenge = lambda challenge, index=idx: notify({
-                        "index": index,
-                        "total": total,
-                        "phase": "challenge" if challenge.get("code") else "querying",
-                        "challenge": challenge if challenge.get("code") else None,
-                        "result": None,
-                    })
-                    notify(
-                        {
-                            "index": idx,
-                            "total": total,
-                            "phase": "querying",
-                            "result": None,
-                        }
-                    )
-                    if not container_shape_ok(row["Container"]) or not carrier_supported(
-                        row["Carrier"]
-                    ):
-                        results[idx] = _invalid_result(row, checked_at())
-                    else:
-                        results[idx] = await _track_one(
-                            session.page,
-                            carrier,
-                            row["Container"],
-                            wait_for_challenge=wait_for_challenge,
-                            browser=session,
-                        )
-                    print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
-                    notify(
-                        {
-                            "index": idx,
-                            "total": total,
-                            "phase": "done",
-                            "result": results[idx],
-                        }
-                    )
-                    written = write_output(written, build_output_frame(rows, results))
-                    streak, tripped = update_circuit(
-                        streak, results[idx].error_code if results[idx] else None
-                    )
-                    if tripped:
-                        paused_code = results[idx].error_code if results[idx] else "CLOUDFLARE"
-                        paused_reason = None
-                        LOGGER.info(
-                            "Pausing remaining %s rows after repeated %s",
-                            carrier,
-                            paused_code,
-                        )
-            finally:
-                await session.close()
+                        for idx in indices[1:]:
+                            finish(
+                                idx,
+                                _paused_result(
+                                    rows[idx],
+                                    checked_at(),
+                                    "CAPTCHA",
+                                    reason=(
+                                        f"Skipped remaining {carrier} rows; "
+                                        "open Google Chrome, complete DataDome, and retry."
+                                    ),
+                                ),
+                            )
+                        return
 
-    if cancelled:
+                    tracker_cls = TRACKERS[carrier]
+                    tracker = tracker_cls(
+                        session.page,
+                        wait_for_challenge=wait_for_challenge,
+                        browser=session,
+                    )
+                    streak = 0
+                    paused_code: str | None = None
+                    paused_reason: str | None = None
+                    queried = False
+                    session_ready = False
+
+                    def set_challenge_callback(index: int, *, scope: str | None = None) -> None:
+                        def report(challenge: dict) -> None:
+                            payload = challenge if challenge.get("code") else None
+                            if payload and scope:
+                                payload = {**payload, "scope": scope}
+                            notify(
+                                {
+                                    "index": index,
+                                    "total": total,
+                                    "phase": (
+                                        "challenge"
+                                        if challenge.get("code")
+                                        else "querying"
+                                    ),
+                                    "challenge": payload,
+                                    "result": None,
+                                }
+                            )
+
+                        session.on_challenge = report
+
+                    async def prepare(index: int) -> str | None:
+                        nonlocal session_ready
+                        tracker.page = session.page
+                        set_challenge_callback(index, scope="carrier")
+                        notify(
+                            {
+                                "index": index,
+                                "total": total,
+                                "phase": "querying",
+                                "result": None,
+                            }
+                        )
+                        try:
+                            await tracker.prepare_session()
+                        except TrackerError as exc:
+                            if exc.code == "CANCELLED":
+                                return "CANCELLED"
+                            finish(
+                                index,
+                                _session_failed_result(
+                                    rows[index],
+                                    checked_at(),
+                                    exc.code,
+                                    str(exc),
+                                    wait_for_challenge=wait_for_challenge,
+                                ),
+                            )
+                            return exc.code
+                        except Exception as exc:  # noqa: BLE001
+                            LOGGER.exception("Could not initialize %s session", carrier)
+                            finish(
+                                index,
+                                _session_failed_result(
+                                    rows[index],
+                                    checked_at(),
+                                    "NAVIGATION",
+                                    str(exc),
+                                    wait_for_challenge=wait_for_challenge,
+                                ),
+                            )
+                            return "NAVIGATION"
+                        session.page = tracker.page
+                        session_ready = True
+                        return None
+
+                    try:
+                        prepare_error = await prepare(first_idx)
+                        if prepare_error:
+                            if prepare_error == "CANCELLED":
+                                return
+                            paused_code = prepare_error
+                            if (
+                                prepare_error in {"CAPTCHA", "CLOUDFLARE"}
+                                and unlocks_in_current_browser(carrier)
+                            ):
+                                paused_reason = (
+                                    f"Skipped remaining {carrier} rows; complete "
+                                    f"{prepare_error} in the current Chrome window, "
+                                    "keep it open, and retry."
+                                )
+                            else:
+                                paused_reason = (
+                                    f"Skipped remaining {carrier} rows because its "
+                                    f"session initialization failed: {prepare_error}."
+                                )
+
+                        for idx in indices:
+                            if _cancelled(cancel_event):
+                                return
+                            if results[idx] is not None:
+                                continue
+                            if paused_code:
+                                finish(
+                                    idx,
+                                    _paused_result(
+                                        rows[idx],
+                                        checked_at(),
+                                        paused_code,
+                                        reason=paused_reason,
+                                    ),
+                                )
+                                continue
+                            if queried:
+                                delay = random.uniform(*query_delay_seconds(carrier))
+                                if await sleep_or_cancel(delay, cancel_event):
+                                    return
+
+                            old_page = session.page
+                            await session.ensure_open()
+                            if session.page is not old_page:
+                                session_ready = False
+                                recovery_error = await prepare(idx)
+                                if recovery_error:
+                                    if recovery_error == "CANCELLED":
+                                        return
+                                    paused_code = recovery_error
+                                    paused_reason = (
+                                        f"Skipped remaining {carrier} rows because "
+                                        f"the browser session could not recover: "
+                                        f"{recovery_error}."
+                                    )
+                                    continue
+
+                            row = rows[idx]
+                            tracker.page = session.page
+                            set_challenge_callback(idx)
+                            notify(
+                                {
+                                    "index": idx,
+                                    "total": total,
+                                    "phase": "querying",
+                                    "result": None,
+                                }
+                            )
+                            result = await _track_one(
+                                session.page,
+                                carrier,
+                                row["Container"],
+                                wait_for_challenge=wait_for_challenge,
+                                browser=session,
+                                tracker=tracker,
+                                session_ready=session_ready,
+                            )
+                            session.page = tracker.page
+                            queried = True
+                            finish(idx, result)
+                            streak, tripped = update_circuit(
+                                streak, result.error_code
+                            )
+                            if tripped:
+                                paused_code = result.error_code or "CLOUDFLARE"
+                                paused_reason = None
+                                LOGGER.info(
+                                    "Pausing remaining %s rows after repeated %s",
+                                    carrier,
+                                    paused_code,
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.exception("Carrier worker failed for %s", carrier)
+                        for idx in indices:
+                            if results[idx] is None and not _cancelled(cancel_event):
+                                finish(
+                                    idx,
+                                    _session_failed_result(
+                                        rows[idx],
+                                        checked_at(),
+                                        "NAVIGATION",
+                                        str(exc),
+                                        wait_for_challenge=wait_for_challenge,
+                                    ),
+                                )
+                    finally:
+                        await session.close()
+
+            await asyncio.gather(
+                *(run_carrier(carrier, indices) for carrier, indices in by_carrier.items())
+            )
+    finally:
+        written = await writer.close()
+
+    if _cancelled(cancel_event):
         print("Stopped. Remaining rows were not queried.")
         notify({"index": None, "total": total, "phase": "cancelled", "result": None})
 

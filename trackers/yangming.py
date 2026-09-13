@@ -136,7 +136,8 @@ class YangMingTracker(BaseTracker):
     )
 
     async def open_page(self) -> None:
-        await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        if not await self.open_tracking_or_reuse("yangming.com"):
+            return
         await self.dismiss_cookies(wait_ms=20_000)
 
     async def search(self, container: str) -> None:
@@ -145,20 +146,33 @@ class YangMingTracker(BaseTracker):
         try:
             await field.wait_for(state="visible", timeout=10_000)
         except Exception as exc:  # noqa: BLE001
-            raise TrackerError("Could not find the container search field.", "SELECTOR") from exc
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+            await self.dismiss_cookies(wait_ms=8_000)
+            field = self.page.get_by_role("textbox").first
+            try:
+                await field.wait_for(state="visible", timeout=10_000)
+            except Exception as retry_exc:  # noqa: BLE001
+                raise TrackerError(
+                    "Could not find the container search field.", "SELECTOR"
+                ) from retry_exc
         await field.click()
         await field.fill("")
         await field.press_sequentially(container, delay=40)
         search = self.page.locator("button:has-text('Search')")
+        submitted = False
         try:
             async with self.page.expect_response(
                 lambda response: "CargoTracking/GetTracking" in response.url,
                 timeout=30_000,
             ):
                 await search.last.click()
+                submitted = True
         except Exception:  # noqa: BLE001
-            await search.last.click(force=True)
-            await field.press("Enter")
+            if not submitted:
+                try:
+                    await search.last.click(force=True)
+                except Exception:  # noqa: BLE001
+                    await field.press("Enter")
         try:
             await self.page.wait_for_function(
                 """() => {

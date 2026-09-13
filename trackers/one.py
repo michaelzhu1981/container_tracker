@@ -358,7 +358,8 @@ class OneTracker(BaseTracker):
                 pass
 
     async def open_page(self) -> None:
-        await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        if not await self.open_tracking_or_reuse("one-line.com"):
+            return
         await self.dismiss_cookies(wait_ms=12_000)
         await self.dismiss_onboarding()
 
@@ -372,7 +373,18 @@ class OneTracker(BaseTracker):
         try:
             await field.first.wait_for(state="visible", timeout=12_000)
         except Exception as exc:  # noqa: BLE001
-            raise TrackerError("Could not find the container search field.", "SELECTOR") from exc
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+            await self.dismiss_cookies(wait_ms=4_000)
+            await self.dismiss_onboarding()
+            field = self.page.locator(
+                "input[placeholder*='Container' i], input[placeholder*='Search by' i]"
+            )
+            try:
+                await field.first.wait_for(state="visible", timeout=12_000)
+            except Exception as retry_exc:  # noqa: BLE001
+                raise TrackerError(
+                    "Could not find the container search field.", "SELECTOR"
+                ) from retry_exc
         await field.first.click()
         await field.first.fill("")
         await field.first.press_sequentially(container, delay=30)
@@ -387,7 +399,10 @@ class OneTracker(BaseTracker):
         if not clicked:
             await field.first.press("Enter")
         await self._wait_for_results()
-        if not await self._has_tracking_result():
+        if (
+            not await self._has_tracking_result()
+            and not await self._page_challenge_code()
+        ):
             await self.page.goto(
                 f"{TRACK_URL}?trakNoParam={quote(container)}&trakNoTpCdParam=C",
                 wait_until="domcontentloaded",

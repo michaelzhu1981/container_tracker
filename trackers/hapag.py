@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
+from challenges import CHALLENGE_CODE_JS
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -364,16 +365,14 @@ class HapagTracker(BaseTracker):
                         text.includes("shipment details") ||
                         text.includes("tracking details") ||
                         !!document.querySelector(".hal-event") ||
-                        !!document.querySelector("table tbody tr")
+                        !!document.querySelector("table tbody tr") ||
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=20_000,
             )
         except Exception:  # noqa: BLE001
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=10_000)
-            except Exception:  # noqa: BLE001
-                pass
+            pass
 
     async def parse_events(self) -> list[CanonicalEvent]:
         html = await self.page.content()

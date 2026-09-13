@@ -32,7 +32,7 @@ playwright install chromium
 
 也接受表头别名，例如 `箱号` / `集装箱号` / `船公司` / `SCAC`。多余列会原样带到结果表。
 
-读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组、一家查完再查下一家。箱号会去掉空格和连字符并转大写；校验位不对仍会查询，只打日志警告。
+读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。最多同时查询 3 家船公司，每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
 
 ## 本地网页控制台
 
@@ -93,7 +93,7 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 ## 结果
 
-结果写入 `output/containers_result.xlsx`。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。完整 HTML 在 `logs/html/`。
+结果写入 `output/containers_result.xlsx`，默认每完成 5 箱或每 10 秒批量保存一次，停止或结束任务时强制保存。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。完整 HTML 在 `logs/html/`。
 
 输出列：`Container` `Carrier` `POL` `Status` `Loaded` `Sailed` `Vessel` `Voyage` `ATD` `Latest Event` `Checked At` `Check Result` `Error Code` `Error` `Screenshot`。
 

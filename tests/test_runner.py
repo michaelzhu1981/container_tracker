@@ -221,6 +221,10 @@ async def test_run_batch_stops_remaining_on_cancel(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("playwright.async_api.async_playwright", lambda: CM())
     monkeypatch.setattr("runner.CarrierBrowser", FakeBrowser)
     monkeypatch.setattr("runner._track_one", fake_track)
+    async def no_prepare(_self):
+        return None
+
+    monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
 
     rows = [
         {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
@@ -268,6 +272,172 @@ def _fake_playwright_browser(monkeypatch):
 
     monkeypatch.setattr("playwright.async_api.async_playwright", lambda: CM())
     monkeypatch.setattr("runner.CarrierBrowser", FakeBrowser)
+
+    async def no_prepare(_self):
+        return None
+
+    monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_limits_parallel_carriers_to_three(
+    tmp_path: Path, monkeypatch
+):
+    import asyncio
+
+    from models import TrackResult
+    from runner import run_batch
+
+    active: set[str] = set()
+    started: list[str] = []
+    max_active = 0
+    three_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_track(page, carrier, container, **kwargs):
+        nonlocal max_active
+        active.add(carrier)
+        started.append(carrier)
+        max_active = max(max_active, len(active))
+        if len(active) == 3:
+            three_started.set()
+        await release.wait()
+        active.remove(carrier)
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    monkeypatch.setattr("runner._track_one", fake_track)
+    _fake_playwright_browser(monkeypatch)
+    rows = [
+        {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
+        {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
+        {"Container": "ONEU1234567", "Carrier": "ONEY", "extras": {}},
+        {"Container": "MSKU1234567", "Carrier": "MAEU", "extras": {}},
+    ]
+
+    task = asyncio.create_task(
+        run_batch(rows, output_path=tmp_path / "out.xlsx")
+    )
+    await asyncio.wait_for(three_started.wait(), timeout=2)
+    await asyncio.sleep(0)
+    assert len(started) == 3
+    assert max_active == 3
+    release.set()
+    results, _written = await asyncio.wait_for(task, timeout=2)
+    assert len(results) == 4
+    assert set(started) == {"HLCU", "YMJA", "ONEY", "MAEU"}
+
+
+@pytest.mark.asyncio
+async def test_carrier_worker_initializes_once_and_queries_serially(
+    tmp_path: Path, monkeypatch
+):
+    import asyncio
+    from collections import Counter
+
+    from models import TrackResult
+    from runner import run_batch
+
+    prepares: Counter[str] = Counter()
+    active: Counter[str] = Counter()
+    max_active: Counter[str] = Counter()
+
+    async def prepare(self):
+        prepares[self.carrier_code] += 1
+
+    async def fake_track(page, carrier, container, **kwargs):
+        active[carrier] += 1
+        max_active[carrier] = max(max_active[carrier], active[carrier])
+        await asyncio.sleep(0.01)
+        active[carrier] -= 1
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    async def no_delay(seconds, cancel_event):
+        return False
+
+    _fake_playwright_browser(monkeypatch)
+    monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", prepare)
+    monkeypatch.setattr("runner._track_one", fake_track)
+    monkeypatch.setattr("runner.sleep_or_cancel", no_delay)
+    rows = [
+        {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
+        {"Container": "HLXU7654321", "Carrier": "HLCU", "extras": {}},
+        {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
+    ]
+
+    results, _written = await run_batch(
+        rows, output_path=tmp_path / "out.xlsx"
+    )
+    assert len(results) == 3
+    assert prepares == Counter({"HLCU": 1, "YMJA": 1})
+    assert max_active == Counter({"HLCU": 1, "YMJA": 1})
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_writer_batches_and_flushes_on_close(
+    tmp_path: Path, monkeypatch
+):
+    import asyncio
+
+    from models import TrackResult
+    from runner import BatchCheckpointWriter
+
+    writes: list[Path] = []
+
+    def fake_write(path, frame):
+        writes.append(path)
+        return path
+
+    monkeypatch.setattr("runner.write_output", fake_write)
+    rows = [
+        {"Container": f"HLXU12345{i:02d}", "Carrier": "HLCU", "extras": {}}
+        for i in range(6)
+    ]
+    results = [None] * len(rows)
+    writer = BatchCheckpointWriter(
+        tmp_path / "out.xlsx",
+        rows,
+        results,
+        batch_size=5,
+        flush_seconds=60,
+    )
+    await writer.start()
+    for idx in range(5):
+        results[idx] = TrackResult(
+            container=rows[idx]["Container"],
+            carrier="HLCU",
+            status="NOT_LOADED",
+            checked_at="t",
+        )
+        writer.mark_completed()
+    for _ in range(50):
+        if len(writes) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert len(writes) == 2
+
+    results[5] = TrackResult(
+        container=rows[5]["Container"],
+        carrier="HLCU",
+        status="NOT_LOADED",
+        checked_at="t",
+    )
+    writer.mark_completed()
+    await writer.close()
+    assert len(writes) == 3
 
 
 @pytest.mark.asyncio

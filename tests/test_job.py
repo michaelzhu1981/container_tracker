@@ -109,6 +109,48 @@ def test_challenge_progress_carrier_unlock_mentions_batch(tmp_path):
     assert "up to 10 min" in message
 
 
+def test_parallel_progress_keeps_all_active_rows(tmp_path):
+    source = tmp_path / "in.xlsx"
+    _write_input(
+        source,
+        [("HLXU1234567", "HLCU"), ("YMLU1234567", "YMJA")],
+    )
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    manager._on_progress(
+        {"index": 0, "phase": "querying", "challenge": None}
+    )
+    manager._on_progress(
+        {
+            "index": 1,
+            "phase": "challenge",
+            "challenge": {
+                "code": "CAPTCHA",
+                "mode": "automatic",
+                "timeout_seconds": 25,
+            },
+        }
+    )
+
+    snap = manager.snapshot()
+    assert snap["counts"]["QUERYING"] == 2
+    assert snap["job"]["current_indices"] == [0, 1]
+    assert snap["job"]["challenges"][0]["index"] == 1
+    assert [row["phase"] for row in snap["rows"]] == ["querying", "challenge"]
+
+    result = TrackResult(
+        container="HLXU1234567",
+        carrier="HLCU",
+        status="NOT_LOADED",
+        checked_at="t",
+    )
+    manager._on_progress(
+        {"index": 0, "phase": "done", "result": result}
+    )
+    snap = manager.snapshot()
+    assert snap["counts"]["QUERYING"] == 1
+    assert snap["job"]["current_indices"] == [1]
+
+
 def test_job_snapshot_merges_previous_results(tmp_path: Path):
     from excel_io import build_output_frame, write_output
 

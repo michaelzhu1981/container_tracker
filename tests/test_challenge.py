@@ -202,6 +202,33 @@ class DummyTracker(BaseTracker):
         return []
 
 
+@pytest.mark.asyncio
+async def test_manual_challenge_slots_are_serialized():
+    class Browser:
+        def __init__(self):
+            self.manual_challenge_lock = asyncio.Lock()
+            self.should_abort = lambda: False
+
+    browser = Browser()
+    trackers = [
+        DummyTracker(FakePage(text=""), browser=browser),
+        DummyTracker(FakePage(text=""), browser=browser),
+    ]
+    active = 0
+    max_active = 0
+
+    async def occupy(tracker):
+        nonlocal active, max_active
+        async with tracker._manual_challenge_slot():
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+    await asyncio.gather(*(occupy(tracker) for tracker in trackers))
+    assert max_active == 1
+
+
 def test_wait_does_not_clear_when_js_gone_but_snapshot_still_captcha(monkeypatch):
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 400)
     monkeypatch.setattr("trackers.base.CHALLENGE_RETRY_DELAYS", ())

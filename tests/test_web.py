@@ -65,3 +65,40 @@ def test_start_and_stop_job(tmp_path: Path):
             if client.get("/api/status").json()["job"]["state"] == "stopped":
                 break
         assert client.get("/api/status").json()["job"]["state"] == "stopped"
+
+
+def test_status_exposes_multiple_parallel_queries(tmp_path: Path):
+    source = tmp_path / "in.xlsx"
+    _write_input(
+        source,
+        [("HLXU1234567", "HLCU"), ("YMLU1234567", "YMJA")],
+    )
+
+    async def fake_run_batch(rows, **kwargs):
+        for index in range(2):
+            kwargs["on_progress"](
+                {
+                    "index": index,
+                    "total": len(rows),
+                    "phase": "querying",
+                    "result": None,
+                }
+            )
+        await kwargs["cancel_event"].wait()
+        return [], kwargs["output_path"]
+
+    manager = JobManager(
+        run_batch_fn=fake_run_batch,
+        input_path=source,
+        output_path=tmp_path / "out.xlsx",
+    )
+    with TestClient(create_app(manager)) as client:
+        assert client.post("/api/start", json={}).status_code == 200
+        status = {}
+        for _ in range(50):
+            status = client.get("/api/status").json()
+            if status["counts"]["QUERYING"] == 2:
+                break
+        assert status["job"]["current_indices"] == [0, 1]
+        assert status["counts"]["QUERYING"] == 2
+        assert client.post("/api/stop").status_code == 200

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -310,11 +311,16 @@ class MaerskTracker(BaseTracker):
         self._tracking_json = None
         if self.page is not None:
             setattr(self.page, "_ct_maersk_json", None)
+            event = getattr(self.page, "_ct_maersk_response_event", None)
+            if event is not None:
+                event.clear()
 
     async def _bind_tracking_response(self) -> None:
         page = self.page
         if getattr(page, "_ct_maersk_bound", False):
             return
+        event = asyncio.Event()
+        setattr(page, "_ct_maersk_response_event", event)
 
         async def handle(response: object) -> None:
             url = str(getattr(response, "url", "") or "")
@@ -328,6 +334,7 @@ class MaerskTracker(BaseTracker):
                 return
             if isinstance(payload, (dict, list)):
                 setattr(page, "_ct_maersk_json", payload)
+                event.set()
 
         page.on("response", handle)
         setattr(page, "_ct_maersk_bound", True)
@@ -405,8 +412,9 @@ class MaerskTracker(BaseTracker):
         return None
 
     async def _wait_for_results(self) -> None:
-        try:
-            await self.page.wait_for_function(
+        response_event = getattr(self.page, "_ct_maersk_response_event", None)
+        dom_wait = asyncio.create_task(
+            self.page.wait_for_function(
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     return (
@@ -424,8 +432,25 @@ class MaerskTracker(BaseTracker):
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=45_000,
             )
+        )
+        waits = {dom_wait}
+        if response_event is not None:
+            waits.add(asyncio.create_task(response_event.wait()))
+        try:
+            done, _pending = await asyncio.wait(
+                waits,
+                timeout=45,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                task.result()
         except Exception:  # noqa: BLE001
             pass
+        finally:
+            for task in waits:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
 
     async def parse_events(self) -> list[CanonicalEvent]:
         captured = self._captured_tracking_json()

@@ -87,6 +87,7 @@ class JobManager:
         self.state = "idle"
         self.rows: list[dict] = []
         self.results: list[TrackResult | None] = []
+        self.active: dict[int, dict[str, Any]] = {}
         self.current_index: int | None = None
         self.phase: str | None = None
         self.challenge: dict | None = None
@@ -113,6 +114,7 @@ class JobManager:
         if self.state in {"running", "stopping"}:
             raise JobBusyError("Cannot reload while a job is running.")
         self.rows, self.results = load_board(self.input_path, self.output_path)
+        self.active = {}
         self.current_index = None
         self.phase = None
         self.challenge = None
@@ -165,6 +167,7 @@ class JobManager:
                         row["Container"], row["Carrier"], cells
                     )
         self.state = "running"
+        self.active = {}
         self.current_index = None
         self.phase = None
         self.challenge = None
@@ -193,24 +196,28 @@ class JobManager:
     def _on_progress(self, payload: dict) -> None:
         idx = payload.get("index")
         phase = payload.get("phase")
-        self.phase = phase
-        self.challenge = payload.get("challenge") if phase == "challenge" else None
         if isinstance(idx, int):
-            self.current_index = idx
             row = self.rows[idx]
-            if phase == "querying":
-                self.message = f"Querying {row['Carrier']} {row['Container']}"
-            elif phase == "challenge" and self.challenge:
-                code = self.challenge["code"]
-                mode = self.challenge.get("mode")
-                seconds = self.challenge.get("timeout_seconds", 0)
+            if phase in {"querying", "challenge"}:
+                self.active[idx] = {
+                    "phase": phase,
+                    "challenge": payload.get("challenge") if phase == "challenge" else None,
+                }
+            elif phase == "done":
+                self.active.pop(idx, None)
+            self.current_index = idx
+            if phase == "challenge" and payload.get("challenge"):
+                current_challenge = payload["challenge"]
+                code = current_challenge["code"]
+                mode = current_challenge.get("mode")
+                seconds = current_challenge.get("timeout_seconds", 0)
                 if mode == "current_browser":
                     wait_label = (
                         f"up to {seconds // 60} min"
                         if seconds >= 60
                         else f"up to {seconds}s"
                     )
-                    if self.challenge.get("scope") == "carrier":
+                    if current_challenge.get("scope") == "carrier":
                         action = (
                             "Complete verification in the current Chrome window; "
                             "keep it open. Batch query starts after it clears "
@@ -231,7 +238,32 @@ class JobManager:
                 self.results[idx] = payload["result"]
                 result = payload["result"]
                 self.message = f"[{idx + 1}/{len(self.rows)}] {result.carrier} {result.container} {result.status}"
+            elif phase == "querying":
+                active_carriers = {
+                    self.rows[index]["Carrier"] for index in self.active
+                }
+                self.message = (
+                    f"Querying {len(self.active)} container(s) across "
+                    f"{len(active_carriers)} carrier(s)"
+                )
+        active_indices = sorted(self.active)
+        self.current_index = active_indices[0] if active_indices else None
+        self.phase = (
+            self.active[self.current_index]["phase"]
+            if self.current_index is not None
+            else phase
+        )
+        active_challenges = [
+            state["challenge"]
+            for state in self.active.values()
+            if state.get("challenge")
+        ]
+        self.challenge = active_challenges[0] if active_challenges else None
         if phase == "cancelled":
+            self.active.clear()
+            self.current_index = None
+            self.phase = "cancelled"
+            self.challenge = None
             self.message = "Stopped. Remaining rows were not queried."
 
     async def _run(self) -> None:
@@ -262,6 +294,7 @@ class JobManager:
                 self.state = "completed"
                 self.message = "Job completed."
         finally:
+            self.active.clear()
             self.current_index = None
             self.phase = None
             self.challenge = None
@@ -273,9 +306,9 @@ class JobManager:
         rows_out: list[dict[str, Any]] = []
         for idx, row in enumerate(self.rows):
             result = self.results[idx] if idx < len(self.results) else None
-            querying = self.current_index == idx and self.phase in {"querying", "challenge"}
-            if querying:
-                phase = self.phase
+            active = self.active.get(idx)
+            if active:
+                phase = active["phase"]
                 counts["QUERYING"] += 1
             elif result is None:
                 phase = "pending"
@@ -290,6 +323,7 @@ class JobManager:
                     "container": row["Container"],
                     "carrier": row["Carrier"],
                     "phase": phase,
+                    "challenge": active.get("challenge") if active else None,
                     "pol": cells["POL"],
                     "status": cells["Status"],
                     "loaded": cells["Loaded"],
@@ -306,13 +340,20 @@ class JobManager:
                 }
             )
         done = sum(1 for item in self.results if item is not None)
+        challenges = [
+            {"index": idx, **state["challenge"]}
+            for idx, state in sorted(self.active.items())
+            if state.get("challenge")
+        ]
         return {
             "job": {
                 "state": self.state,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
                 "current_index": self.current_index,
+                "current_indices": sorted(self.active),
                 "challenge": self.challenge,
+                "challenges": challenges,
                 "total": len(self.rows),
                 "done": done,
                 "input": relative_to_root(self.input_path) or str(self.input_path),

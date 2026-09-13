@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -190,7 +190,10 @@ class BaseTracker(ABC):
             for selector in COOKIE_SELECTORS:
                 locator = self.page.locator(selector)
                 try:
-                    if await locator.first.is_visible(timeout=400):
+                    # The banner wait above is the only blocking probe. Trying
+                    # every fallback selector with its own timeout can add
+                    # several seconds whenever no banner is present.
+                    if await locator.first.is_visible(timeout=0):
                         await locator.first.click(timeout=3000, force=True)
                         clicked = True
                         await self.page.wait_for_timeout(500)
@@ -234,6 +237,27 @@ class BaseTracker(ABC):
         report = getattr(self.browser, "on_challenge", None)
         if callable(report):
             report({"code": code, "mode": mode, "timeout_seconds": timeout_ms // 1000})
+
+    @asynccontextmanager
+    async def _manual_challenge_slot(self):
+        """Serialize only the part of a challenge that needs a person."""
+        lock = getattr(self.browser, "manual_challenge_lock", None)
+        if lock is None:
+            yield
+            return
+        acquired = False
+        try:
+            while not acquired:
+                self._check_cancelled()
+                try:
+                    await asyncio.wait_for(lock.acquire(), timeout=0.25)
+                    acquired = True
+                except asyncio.TimeoutError:
+                    continue
+            yield
+        finally:
+            if acquired:
+                lock.release()
 
     async def _wait_challenge_gone(self, timeout_ms: int) -> bool:
         deadline = time.monotonic() + max(timeout_ms, 0) / 1000
@@ -369,55 +393,14 @@ class BaseTracker(ABC):
                 code = leftover
 
         if self.wait_for_challenge:
-            self._human_wait_used = True
-            if self.wait_in_current_browser:
-                wait_ms = self._current_browser_wait_ms()
-                seconds = wait_ms // 1000
-                LOGGER.info(
-                    "Waiting up to %ss for %s in the current %s window; keep it open",
-                    seconds, code, self.carrier_code,
-                )
-                self._report_challenge(code, "current_browser", wait_ms)
-                print(
-                    f"Complete {code} in the current {self.carrier_code} Chrome window. "
-                    "Keep it open. After it clears, remaining containers are queried "
-                    "in this window. Stop cancels this wait."
-                )
-                if await self._wait_challenge_gone(wait_ms):
-                    leftover = await self._after_challenge_cleared()
-                    if not leftover:
-                        self._report_challenge(None)
-                        return True
-            elif self.browser is not None and hasattr(
-                self.browser, "hand_off_to_system_chrome"
-            ):
-                LOGGER.info("Handing %s off to system Chrome for a human check", code)
-                self._report_challenge(code, "system_chrome")
-                handed = await self.browser.hand_off_to_system_chrome(self.tracking_url)
-                if handed:
-                    self.page = self.browser.page
-                    leftover = await self._after_challenge_cleared()
-                    if not leftover:
-                        self._report_challenge(None)
-                        return True
-            else:
-                seconds = CHALLENGE_WAIT_MS // 1000
-                print(
-                    f"Security check ({code}) is blocking the page. "
-                    f"Complete it in the browser window; tracking resumes automatically "
-                    f"(timeout {seconds}s)."
-                )
-                LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
-                if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
-                    leftover = await self._after_challenge_cleared()
-                    if not leftover:
-                        self._report_challenge(None)
-                        return True
-            still = await self._page_challenge_code() or code
-            raise TrackerError(
-                f"Timed out waiting for the {still} check to clear.",
-                still,
-            )
+            async with self._manual_challenge_slot():
+                # Another carrier may have occupied the human-verification
+                # slot for a while. Recheck before asking the user to act.
+                code = await self._page_challenge_code()
+                if not code:
+                    self._report_challenge(None)
+                    return True
+                return await self._wait_for_human_challenge(code)
 
         # An interactive CAPTCHA cannot clear through repeated reloads.
         if code == "CAPTCHA":
@@ -436,6 +419,62 @@ class BaseTracker(ABC):
                     self._report_challenge(None)
                     return True
 
+        still = await self._page_challenge_code() or code
+        raise TrackerError(
+            f"Timed out waiting for the {still} check to clear.",
+            still,
+        )
+
+    async def _wait_for_human_challenge(self, code: str) -> bool:
+        """Handle a challenge after the shared human slot is acquired."""
+        if self._human_wait_used:
+            raise TrackerError(
+                f"{code} returned after verification; retry this carrier later.", code
+            )
+        self._human_wait_used = True
+        if self.wait_in_current_browser:
+            wait_ms = self._current_browser_wait_ms()
+            seconds = wait_ms // 1000
+            LOGGER.info(
+                "Waiting up to %ss for %s in the current %s window; keep it open",
+                seconds, code, self.carrier_code,
+            )
+            self._report_challenge(code, "current_browser", wait_ms)
+            print(
+                f"Complete {code} in the current {self.carrier_code} Chrome window. "
+                "Keep it open. After it clears, remaining containers are queried "
+                "in this window. Stop cancels this wait."
+            )
+            if await self._wait_challenge_gone(wait_ms):
+                leftover = await self._after_challenge_cleared()
+                if not leftover:
+                    self._report_challenge(None)
+                    return True
+        elif self.browser is not None and hasattr(
+            self.browser, "hand_off_to_system_chrome"
+        ):
+            LOGGER.info("Handing %s off to system Chrome for a human check", code)
+            self._report_challenge(code, "system_chrome")
+            handed = await self.browser.hand_off_to_system_chrome(self.tracking_url)
+            if handed:
+                self.page = self.browser.page
+                leftover = await self._after_challenge_cleared()
+                if not leftover:
+                    self._report_challenge(None)
+                    return True
+        else:
+            seconds = CHALLENGE_WAIT_MS // 1000
+            print(
+                f"Security check ({code}) is blocking the page. "
+                f"Complete it in the browser window; tracking resumes automatically "
+                f"(timeout {seconds}s)."
+            )
+            LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
+            if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
+                leftover = await self._after_challenge_cleared()
+                if not leftover:
+                    self._report_challenge(None)
+                    return True
         still = await self._page_challenge_code() or code
         raise TrackerError(
             f"Timed out waiting for the {still} check to clear.",
@@ -510,17 +549,20 @@ class BaseTracker(ABC):
     @abstractmethod
     async def parse_events(self) -> list[CanonicalEvent]: ...
 
-    async def track(self, container: str) -> TrackResult:
+    async def track(self, container: str, *, session_ready: bool = False) -> TrackResult:
+        self._screenshot = None
+        self._html = None
+        self._human_wait_used = False
         stamp = checked_at()
         try:
-            await self.open_page()
-            if not await self._page_challenge_code():
-                await self.dismiss_cookies()
+            if not session_ready:
+                await self.open_page()
+                if not await self._page_challenge_code():
+                    await self.dismiss_cookies()
             await self.pass_or_wait_for_challenge()
             searched_page = self.page
             await self.search(container)
-            await self.dismiss_cookies(wait_ms=8_000)
-            await self.page.wait_for_timeout(1500)
+            await self.dismiss_cookies(wait_ms=0)
             recovered = await self.pass_or_wait_for_challenge()
             if recovered and (
                 self.page is not searched_page

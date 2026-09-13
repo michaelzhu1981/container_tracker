@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import replace
 
+from challenges import CHALLENGE_CODE_JS
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -313,7 +314,8 @@ class MscTracker(BaseTracker):
         await super().prepare_for_screenshot()
 
     async def open_page(self) -> None:
-        await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        if not await self.open_tracking_or_reuse("msc.com"):
+            return
         html = (await self.page.content()).lower()
         if "access denied" in html or "errors.edgesuite.net" in html:
             raise TrackerError(
@@ -334,7 +336,15 @@ class MscTracker(BaseTracker):
         try:
             await field.first.wait_for(state="visible", timeout=12_000)
         except Exception as exc:  # noqa: BLE001
-            raise TrackerError("Could not find the container search field.", "SELECTOR") from exc
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+            await self.dismiss_cookies(wait_ms=4_000)
+            field = self.page.locator("#trackingNumber")
+            try:
+                await field.first.wait_for(state="visible", timeout=12_000)
+            except Exception as retry_exc:  # noqa: BLE001
+                raise TrackerError(
+                    "Could not find the container search field.", "SELECTOR"
+                ) from retry_exc
         await field.first.click()
         await field.first.fill("")
         await field.first.press_sequentially(container, delay=40)
@@ -348,7 +358,6 @@ class MscTracker(BaseTracker):
             await self.page.wait_for_function(
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
-                    const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
                     return (
                         !!document.querySelector(".msc-flow-tracking__step") ||
                         text.includes("no result") ||
@@ -358,10 +367,9 @@ class MscTracker(BaseTracker):
                         text.includes("not valid") ||
                         text.includes("export loaded") ||
                         text.includes("empty to shipper") ||
-                        html.includes("recaptcha") ||
-                        html.includes("hcaptcha")
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=40_000,
             )
         except Exception:  # noqa: BLE001

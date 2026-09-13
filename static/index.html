@@ -348,7 +348,7 @@
     let page = 1;
     let lastFilter = "ALL";
     let lastCarrierFilter = "";
-    let lastCurrent = null;
+    let lastCurrent = "";
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -479,11 +479,15 @@
         lastFilter = filter;
         lastCarrierFilter = carrierFilter;
       }
-      if (job.current_index != null && job.current_index !== lastCurrent) {
-        const pos = rows.findIndex((row) => row.index === job.current_index);
+      const currentIndices = job.current_indices || (
+        job.current_index == null ? [] : [job.current_index]
+      );
+      const currentKey = currentIndices.join(",");
+      if (currentIndices.length === 1 && currentKey !== lastCurrent) {
+        const pos = rows.findIndex((row) => row.index === currentIndices[0]);
         if (pos >= 0) page = Math.floor(pos / pageSize) + 1;
-        lastCurrent = job.current_index;
       }
+      lastCurrent = currentKey;
       const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
       page = Math.min(Math.max(1, page), pageCount);
       const start = (page - 1) * pageSize;
@@ -498,7 +502,12 @@
           <td>${row.index + 1}</td>
           <td>${esc(row.container)}</td>
           <td>${esc(row.carrier)}</td>
-          <td>${badge(row.phase === "challenge" ? "Waiting for verification" : row.phase, row.phase)}</td>
+          <td>${badge(
+            row.phase === "challenge"
+              ? `Waiting: ${(row.challenge && row.challenge.code) || "verification"}`
+              : row.phase,
+            row.phase
+          )}</td>
           <td>${row.status ? badge(row.status) : "—"}</td>
           <td>${esc(row.loaded || "—")}</td>
           <td>${esc(row.sailed || "—")}</td>
@@ -526,8 +535,8 @@
       pageButtonsEl.innerHTML = pages.map((n) =>
         `<button type="button" class="${n === page ? "active" : "secondary"}" data-page="${n}">${n}</button>`
       ).join("");
-      if (job.current_index != null) {
-        const current = document.getElementById("row-" + job.current_index);
+      if (currentIndices.length === 1) {
+        const current = document.getElementById("row-" + currentIndices[0]);
         if (current) current.scrollIntoView({ block: "nearest" });
       }
     }
