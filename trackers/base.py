@@ -117,6 +117,7 @@ _QUERY_PAGE_MARKERS = (
     "loaded on board",
     "vessel departure",
     "gate in full",
+    "laden return",
     "eventtable",
     "msc-flow-tracking__step",
     "gridtrackingdetails",

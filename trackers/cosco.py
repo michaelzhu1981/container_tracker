@@ -47,8 +47,29 @@ _JSON_VSL_KEYS = ("vesselname", "vessel", "vslname")
 _JSON_VOY_KEYS = ("voyage", "voyageno", "voy")
 
 _VOYAGE_RE = re.compile(r"\b(\d{2,4}[A-Z])\b", re.I)
+_TITLE_CONTAINER_RE = re.compile(
+    r"<div[^>]*(?:font-weight:\s*bold|font-size:\s*20px)[^>]*>\s*([A-Z]{4}\d{6,7})\s*</div>",
+    re.I,
+)
 _SKIP_STATUS = frozenset({"", "dynamic node", "event", "status", "activity", "node"})
 _POL_DEPA = ("from first pol", "from pol", "departure from first")
+_RESULT_CONTAINER_JS = """() => {
+    const nodes = [...document.querySelectorAll("div,span,h1,h2,h3,strong")];
+    const match = (el) => {
+        if (el.children.length) return "";
+        const text = (el.textContent || "").trim().toUpperCase();
+        return /^[A-Z]{4}\\d{6,7}$/.test(text) ? text : "";
+    };
+    const titled = nodes.find((el) => {
+        const text = match(el);
+        if (!text) return false;
+        const style = window.getComputedStyle(el);
+        return Number(style.fontWeight) >= 600 || parseFloat(style.fontSize) >= 18;
+    });
+    if (titled) return match(titled);
+    const any = nodes.find((el) => match(el));
+    return any ? match(any) : "";
+}"""
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -222,6 +243,19 @@ def _ensure_pol_load(events: list[CanonicalEvent]) -> list[CanonicalEvent]:
     return extras + events
 
 
+def displayed_container(html: str) -> str | None:
+    """Return the COSCO result heading, ignoring the search input value."""
+    match = _TITLE_CONTAINER_RE.search(html)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def result_is_stale(html: str, container: str) -> bool:
+    shown = displayed_container(html)
+    return bool(shown and shown != container.upper())
+
+
 def parse_cosco_html(html: str) -> list[CanonicalEvent]:
     """Parse COSCO cargo-tracking milestones from an HTML snapshot."""
     events = _parse_cosco_tables(html)
@@ -249,42 +283,66 @@ class CoscoTracker(BaseTracker):
         ".main-content",
     )
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._expected = ""
+
     async def open_page(self) -> None:
         if not await self.open_tracking_or_reuse("coscoshipping.com"):
             return
         await self.dismiss_cookies(wait_ms=10_000)
 
-    async def search(self, container: str) -> None:
-        self._search_submitted = False
-        await self.dismiss_cookies(wait_ms=0)
+    async def _fill_search(self, container: str) -> bool:
         field = self.page.locator(
             "input.ant-input, input[placeholder*='container' i], input[type='text']"
         )
-        filled = False
         try:
-            if await field.first.is_visible(timeout=4_000):
-                await field.first.click()
-                await field.first.fill("")
-                await field.first.fill(container)
-                filled = True
+            if not await field.first.is_visible(timeout=4_000):
+                return False
+            await field.first.click()
+            await field.first.fill("")
+            await field.first.fill(container)
         except Exception:  # noqa: BLE001
-            filled = False
-        if filled:
-            search = self.page.locator("button:has-text('Search')")
-            try:
-                await search.first.click(timeout=8_000)
-                self._search_submitted = True
-            except Exception:  # noqa: BLE001
-                await field.first.press("Enter")
-                self._search_submitted = True
-        if not await self._has_tracking_result() and not await self._page_challenge_code():
-            await self.page.goto(
-                TRACK_RESULT_URL.format(number=quote(container)),
-                wait_until="domcontentloaded",
-            )
-            await self.dismiss_cookies(wait_ms=0)
+            return False
+        search = self.page.locator("button:has-text('Search')")
+        try:
+            await search.first.click(timeout=8_000)
+        except Exception:  # noqa: BLE001
+            await field.first.press("Enter")
+        return True
+
+    async def _open_result_url(self, container: str) -> None:
+        await self.page.goto(
+            TRACK_RESULT_URL.format(number=quote(container)),
+            wait_until="domcontentloaded",
+        )
+        await self.dismiss_cookies(wait_ms=0)
+
+    async def search(self, container: str) -> None:
+        self._search_submitted = False
+        self._expected = container.upper()
+        await self.dismiss_cookies(wait_ms=0)
+        if await self._fill_search(container):
             self._search_submitted = True
-        await self._wait_for_results()
+            await self._wait_for_results(container)
+            if await self._result_matches(container) or await self._page_challenge_code():
+                return
+        await self._open_result_url(container)
+        self._search_submitted = True
+        await self._wait_for_results(container)
+
+    async def _displayed_container(self) -> str:
+        try:
+            value = await self.page.evaluate(_RESULT_CONTAINER_JS)
+        except Exception:  # noqa: BLE001
+            return ""
+        return str(value or "").upper()
+
+    async def _result_matches(self, container: str) -> bool:
+        shown = await self._displayed_container()
+        if shown == container.upper():
+            return await self._has_tracking_result()
+        return False
 
     async def _has_tracking_result(self) -> bool:
         try:
@@ -293,23 +351,33 @@ class CoscoTracker(BaseTracker):
             return False
         return (
             "dynamic node" in text
+            or "laden return" in text
             or "vessel departure from first pol" in text
-            or "event time" in text and "event location" in text
+            or "event time" in text
+            and "event location" in text
         )
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, container: str) -> None:
+        expected = container.upper()
         try:
             await self.page.wait_for_function(
-                """() => {
-                    const text = (document.body && document.body.innerText || "").toLowerCase();
+                """(expected) => {
+                    if ((DETECT_CHALLENGE)()) return true;
+                    const leaf = [...document.querySelectorAll("div,span,h1,h2,h3,strong")].some((el) => {
+                        if (el.children.length) return false;
+                        return (el.textContent || "").trim().toUpperCase() === expected;
+                    });
+                    if (!leaf) return false;
+                    const low = (document.body && document.body.innerText || "").toLowerCase();
                     return (
-                        text.includes("dynamic node") ||
-                        text.includes("vessel departure from first pol") ||
-                        text.includes("no data") ||
-                        text.includes("not found") ||
-                        (DETECT_CHALLENGE)()
+                        low.includes("dynamic node") ||
+                        low.includes("laden return") ||
+                        (low.includes("event time") && low.includes("event location")) ||
+                        low.includes("no data") ||
+                        low.includes("not found")
                     );
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                arg=expected,
                 timeout=30_000,
             )
         except Exception:  # noqa: BLE001
@@ -317,6 +385,17 @@ class CoscoTracker(BaseTracker):
 
     async def parse_events(self) -> list[CanonicalEvent]:
         html = await self.page.content()
+        expected = self._expected
+        if expected and result_is_stale(html, expected):
+            await self._open_result_url(expected)
+            await self._wait_for_results(expected)
+            html = await self.page.content()
+        if expected and result_is_stale(html, expected):
+            shown = displayed_container(html) or "another container"
+            raise TrackerError(
+                f"Tracking page still shows {shown} instead of {expected}.",
+                "PARSE",
+            )
         events = parse_cosco_html(html)
         if events:
             return events

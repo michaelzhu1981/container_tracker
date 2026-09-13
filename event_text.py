@@ -151,6 +151,16 @@ def classify_event_type(text: str) -> EventType:
         return "GTOT"
     if "export received" in blob:
         return "GTIN"
+    if any(
+        k in blob
+        for k in (
+            "laden return",
+            "laden returned",
+            "full return",
+            "full returned",
+        )
+    ):
+        return "GTIN"
     if "gate in" in blob or "gated in" in blob or "gate-in" in blob:
         return "GTIN"
     if "gate out" in blob or "gated out" in blob or "gate-out" in blob:
