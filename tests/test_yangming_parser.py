@@ -27,7 +27,7 @@ def test_parse_sailed_fixture():
     assert result.voyage == "046E"
 
 
-def test_parse_on_board_waiting_slash_dates():
+def test_parse_on_board_is_sailed():
     html = (FIXTURES / "on_board_waiting.html").read_text(encoding="utf-8")
     events = parse_yangming_html(html)
     assert events[0].event_date == "2026-08-25"
@@ -41,8 +41,11 @@ def test_parse_on_board_waiting_slash_dates():
         timeline_order="newest_first",
         checked_at="2026-09-13 00:00:00",
     )
-    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.status == "SAILED"
+    assert result.sailed is True
+    assert result.atd == "2026-08-25 12:48"
     assert result.vessel == "ONE MANHATTAN"
+    assert result.voyage == "046E"
 
 
 def test_parse_empty_returned_is_not_loaded():

@@ -432,6 +432,52 @@ def test_unknown_transport_does_not_count_as_ocean():
     assert result.status == "NOT_LOADED"
 
 
+def test_ymja_on_board_is_sailed_with_atd():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="VUNG TAU",
+            event_date="2026-08-25",
+            event_time="12:48",
+            sequence_index=0,
+            vessel="ONE MANHATTAN",
+            voyage="046E",
+            raw_text="On Board VUNG TAU ONE MANHATTAN 046E",
+        )
+    ]
+    result = evaluate(
+        events,
+        container="BMOU5733569",
+        carrier="YMJA",
+        timeline_order="newest_first",
+        checked_at="2026-09-13 00:00:00",
+    )
+    assert result.status == "SAILED"
+    assert result.sailed is True
+    assert result.atd == "2026-08-25 12:48"
+    assert result.pol == "VUNG TAU"
+    assert result.vessel == "ONE MANHATTAN"
+
+
+def test_other_carrier_on_board_is_not_sailed():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="YANTIAN",
+            event_date="2026-08-25",
+            event_time="12:48",
+            sequence_index=0,
+            vessel="ONE MANHATTAN",
+            voyage="046E",
+            raw_text="On Board YANTIAN",
+        )
+    ]
+    result = _eval(events)
+    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.sailed is False
+    assert result.atd is None
+
+
 def test_no_dates_is_ambiguous():
     events = [
         ev(type="LOAD", location_raw="YANTIAN", sequence_index=0, raw_text="Loaded"),

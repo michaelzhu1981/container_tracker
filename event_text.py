@@ -144,6 +144,11 @@ def parse_timestamp(text: str) -> tuple[str, str | None, str | None]:
     return raw, None, None
 
 
+def is_on_board(event: CanonicalEvent) -> bool:
+    blob = _lower(event.raw_text)
+    return "on board" in blob or "onboard" in blob
+
+
 def is_empty_return(event: CanonicalEvent) -> bool:
     blob = _lower(event.raw_text)
     if event.classifier != "ACT":

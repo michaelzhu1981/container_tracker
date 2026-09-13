@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Iterable
 
-from event_text import format_event_time, is_empty_return
+from event_text import format_event_time, is_empty_return, is_on_board
 from models import CanonicalEvent, CheckResult, Status, TimelineOrder, TrackResult
 from ports import display_port
 
@@ -265,14 +265,20 @@ def evaluate(
         status: Status = "SAILED"
     elif load:
         chosen = _latest(load, timeline_order)
+        first_load = _earliest(load, timeline_order)
         result.loaded = True
-        result.sailed = False
         result.vessel = chosen.vessel if chosen else None
         result.voyage = chosen.voyage if chosen else None
-        first_load = _earliest(load, timeline_order)
         if first_load:
             result.pol = display_port(first_load.location_raw) or first_load.location_norm
-        status = "LOADED_WAITING_DEPARTURE"
+        on_board = _earliest([e for e in load if is_on_board(e)], timeline_order) if carrier == "YMJA" else None
+        if on_board:
+            result.sailed = True
+            result.atd = format_event_time(on_board)
+            status = "SAILED"
+        else:
+            result.sailed = False
+            status = "LOADED_WAITING_DEPARTURE"
     else:
         result.loaded = False
         result.sailed = False
