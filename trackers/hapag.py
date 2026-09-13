@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -26,6 +27,45 @@ _EXPAND_BUTTON = (
 )
 _EXPAND_ROW = "table:has-text('Latest Event') tbody tr.q-tr--hal:visible"
 _DETAILS = ".hal-event-tracking"
+
+_CLICK_EXPAND_JS = """() => {
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    if ([...document.querySelectorAll(".hal-event-tracking .hal-event")].some(visible)) {
+        return 0;
+    }
+    const table = [...document.querySelectorAll("table")].find((node) =>
+        /latest event/i.test(node.innerText || "")
+    );
+    if (!table) return 0;
+    let n = 0;
+    for (const tr of table.querySelectorAll("tbody tr")) {
+        if (!visible(tr) || !/[A-Z]{4}\\d{7}/.test(tr.innerText || "")) continue;
+        const buttons = [...tr.querySelectorAll("button.q-btn--icon-only, button")].filter(visible);
+        const btn = buttons.at(-1);
+        if (!btn) continue;
+        btn.click();
+        n += 1;
+    }
+    return n;
+}"""
+
+_VISIBLE_EVENT_COUNT_JS = """() => {
+    let n = 0;
+    for (const el of document.querySelectorAll(".hal-event-tracking .hal-event, .hal-event")) {
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        if (r.height > 8 && r.width > 8 && cs.display !== "none" && cs.visibility !== "hidden") {
+            n += 1;
+        }
+    }
+    return n;
+}"""
 
 TRACK_URL = (
     "https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html"
@@ -213,26 +253,48 @@ class HapagTracker(BaseTracker):
         "table:has-text('Latest Event')",
     )
 
-    async def expand_result_details(self) -> None:
-        """Open the right-hand chevron so movement details are visible."""
-        details = self.page.locator(_DETAILS)
+    async def _visible_event_count(self) -> int:
         try:
-            if await details.first.is_visible(timeout=400):
-                return
+            return int(await self.page.evaluate(_VISIBLE_EVENT_COUNT_JS) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    async def _click_expand(self) -> int:
+        try:
+            clicked = await self.page.evaluate(_CLICK_EXPAND_JS)
+            if clicked:
+                return int(clicked)
         except Exception:  # noqa: BLE001
             pass
-        for selector in (_EXPAND_BUTTON, _EXPAND_ROW):
+        for selector in (
+            "tr.q-tr--hal button.q-btn--icon-only",
+            _EXPAND_BUTTON,
+            _EXPAND_ROW,
+        ):
             target = self.page.locator(selector)
             try:
-                if not await target.first.is_visible(timeout=1500):
-                    continue
-                await target.first.click(timeout=3_000)
-                await details.first.wait_for(state="visible", timeout=8_000)
-                await self.page.wait_for_timeout(400)
-                return
+                if await target.first.is_visible(timeout=800):
+                    await target.first.click(timeout=3_000)
+                    return 1
             except Exception:  # noqa: BLE001
                 continue
-        LOGGER.info("Hapag result details stayed collapsed; screenshot may lack events.")
+        return 0
+
+    async def expand_result_details(self) -> None:
+        """Open the right-hand chevron so movement details are visible."""
+        before = await self._visible_event_count()
+        if before > 0:
+            return
+        clicked = await self._click_expand()
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            now = await self._visible_event_count()
+            if now > before:
+                await self.page.wait_for_timeout(400)
+                return
+            await self.page.wait_for_timeout(200)
+        if clicked:
+            LOGGER.info("Hapag result details stayed collapsed; screenshot may lack events.")
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -379,6 +441,7 @@ class HapagTracker(BaseTracker):
             pass
 
     async def parse_events(self) -> list[CanonicalEvent]:
+        await self.expand_result_details()
         html = await self.page.content()
         events = parse_hapag_html(html)
         if events:

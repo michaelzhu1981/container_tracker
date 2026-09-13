@@ -78,37 +78,24 @@ def test_parse_barge_only_fixture():
     assert result.sailed is False
 
 
-class _ExpandLocator:
-    def __init__(self, page: "_ExpandPage", selector: str) -> None:
-        self.page = page
-        self.selector = selector
-
-    @property
-    def first(self) -> "_ExpandLocator":
-        return self
-
-    async def is_visible(self, timeout: int = 0) -> bool:
-        if "hal-event-tracking" in self.selector:
-            return self.page.details_visible
-        return "Latest Event" in self.selector
-
-    async def click(self, timeout: int = 0) -> None:
-        self.page.clicks.append(self.selector)
-        self.page.details_visible = True
-
-    async def wait_for(self, state: str | None = None, timeout: int = 0) -> None:
-        if state == "visible" and "hal-event-tracking" in self.selector:
-            if not self.page.details_visible:
-                raise TimeoutError("details still collapsed")
-
-
 class _ExpandPage:
     def __init__(self) -> None:
-        self.details_visible = False
-        self.clicks: list[str] = []
+        self.visible_events = 0
+        self.clicked = 0
+        self.evaluate_scripts: list[str] = []
 
-    def locator(self, selector: str) -> _ExpandLocator:
-        return _ExpandLocator(self, selector)
+    async def evaluate(self, script: str):
+        self.evaluate_scripts.append(script)
+        if "q-btn--icon-only" in script and "latest event" in script.lower():
+            self.clicked += 1
+            self.visible_events = 4
+            return 1
+        if "hal-event" in script:
+            return self.visible_events
+        return 0
+
+    def locator(self, selector: str):
+        raise AssertionError(f"locator fallback should not run: {selector}")
 
     async def wait_for_timeout(self, ms: int) -> None:
         return None
@@ -118,5 +105,17 @@ def test_expand_result_details_clicks_chevron_before_screenshot():
     page = _ExpandPage()
     tracker = HapagTracker(page)
     asyncio.run(tracker.expand_result_details())
-    assert page.details_visible is True
-    assert any("q-btn--icon-only" in selector for selector in page.clicks)
+    assert page.clicked == 1
+    assert page.visible_events == 4
+    assert any(
+        "q-btn--icon-only" in script and "latest event" in script.lower()
+        for script in page.evaluate_scripts
+    )
+
+
+def test_expand_result_details_skips_click_when_timeline_is_open():
+    page = _ExpandPage()
+    page.visible_events = 3
+    tracker = HapagTracker(page)
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 0
