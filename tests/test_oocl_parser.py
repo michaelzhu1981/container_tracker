@@ -3,9 +3,22 @@ from pathlib import Path
 import pytest
 
 from status_engine import evaluate
-from trackers.oocl import OoclTracker, _SEARCH_FIELD_SELECTORS, parse_oocl_html
+from trackers.base import TrackerError, looks_like_no_result
+from trackers.oocl import (
+    OoclTracker,
+    _SEARCH_FIELD_SELECTORS,
+    _SUBMIT_BUTTON_SELECTORS,
+    is_oocl_site_error_page,
+    parse_oocl_html,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "oocl"
+OOCL_404_VISIBLE = (
+    "Oops!\n"
+    "Page Not Found\n"
+    "The page you are looking for might have been removed, had its name changed,\n"
+    "or is temporarily unavailable. If you typed the page URL, check the spelling."
+)
 
 
 def test_parse_sailed_fixture():
@@ -74,3 +87,137 @@ async def test_first_visible_search_field_ignores_hidden_header_search():
     assert field is not None
     assert field.selector == "#SEARCH_NUMBER"
     assert seen[0] == "#SEARCH_NUMBER"
+
+
+def test_site_404_is_navigation_not_container_miss():
+    html = (FIXTURES / "page_not_found.html").read_text(encoding="utf-8")
+    assert parse_oocl_html(html) == []
+    assert is_oocl_site_error_page(OOCL_404_VISIBLE, html) is True
+    assert looks_like_no_result(OOCL_404_VISIBLE) is False
+
+
+def test_search_clicks_cargo_tracking_button():
+    assert "#container_btn" in _SUBMIT_BUTTON_SELECTORS
+    assert "#SEARCH_NUMBER" not in _SUBMIT_BUTTON_SELECTORS
+
+
+@pytest.mark.asyncio
+async def test_parse_events_treats_site_404_as_navigation():
+    html = (FIXTURES / "page_not_found.html").read_text(encoding="utf-8")
+
+    class Page:
+        async def content(self):
+            return html
+
+        async def evaluate(self, script):
+            return OOCL_404_VISIBLE
+
+    with pytest.raises(TrackerError) as exc:
+        await OoclTracker(Page()).parse_events()
+    assert exc.value.code == "NAVIGATION"
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_open_removed_express_link():
+    gotos: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "#SEARCH_NUMBER" in self.selector or "#container_btn" in self.selector
+
+        async def click(self, **kwargs):
+            return None
+
+        async def fill(self, value):
+            return None
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def scroll_into_view_if_needed(self):
+            return None
+
+        async def inner_text(self):
+            return "Container #"
+
+        async def select_option(self, **kwargs):
+            return None
+
+    class Keyboard:
+        async def press(self, key):
+            return None
+
+    class Page:
+        def __init__(self):
+            self.keyboard = Keyboard()
+
+        async def goto(self, url, **kwargs):
+            gotos.append(url)
+
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def evaluate(self, script, arg=None):
+            return ""
+
+        def expect_popup(self, timeout=0):
+            raise TimeoutError("no popup")
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    await OoclTracker(Page()).search("TCNU1971808")
+    assert not any("ExpressLink" in url for url in gotos)
+
+
+@pytest.mark.asyncio
+async def test_search_without_field_is_selector_not_express_link():
+    gotos: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return False
+
+        async def wait_for(self, **kwargs):
+            raise TimeoutError(self.selector)
+
+        async def scroll_into_view_if_needed(self):
+            return None
+
+        async def click(self, **kwargs):
+            return None
+
+        async def inner_text(self):
+            return ""
+
+        async def select_option(self, **kwargs):
+            return None
+
+    class Page:
+        async def goto(self, url, **kwargs):
+            gotos.append(url)
+
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def evaluate(self, script, arg=None):
+            return ""
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    with pytest.raises(TrackerError) as exc:
+        await OoclTracker(Page()).search("TCNU1971808")
+    assert exc.value.code == "SELECTOR"
+    assert not any("ExpressLink" in url for url in gotos)

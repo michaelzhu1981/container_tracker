@@ -112,6 +112,16 @@ def test_cma_provisional_moves_disclaimer_is_not_no_result():
     )
 
 
+def test_oocl_site_404_is_not_a_container_miss():
+    visible = (
+        "Oops!\n"
+        "Page Not Found\n"
+        "The page you are looking for might have been removed, had its name changed,\n"
+        "or is temporarily unavailable. If you typed the page URL, check the spelling."
+    )
+    assert not looks_like_no_result(visible)
+
+
 def test_query_screenshot_keeps_tracking_results_only():
     assert is_query_screenshot_page(
         "Latest Event\nLoaded SALALAH",

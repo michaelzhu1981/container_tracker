@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import quote
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -17,16 +16,11 @@ from event_text import (
 from html_tables import parse_tables
 from models import CanonicalEvent
 from ports import normalize_key
-from trackers.base import BaseTracker, TrackerError, looks_like_no_result
+from trackers.base import COOKIE_BANNER_WAIT_MS, BaseTracker, TrackerError, looks_like_no_result
 
 TRACK_URL = (
     "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
     "Pages/cargotracking.aspx"
-)
-EXPRESS_LINK = (
-    "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
-    "Pages/ExpressLink.aspx?eltype=ct&businessType=containerNumber"
-    "&businessNumber={number}&language=en"
 )
 
 _HEADER_HINTS = {
@@ -56,6 +50,13 @@ _SEARCH_FIELD_SELECTORS = (
     "input[name='SEARCH_NUMBER']",
     "input[placeholder*='Container' i]",
     ".function-input input.filter-input",
+)
+_SUBMIT_BUTTON_SELECTORS = (
+    "#container_btn",
+    "a[onclick*='ListeningCargoTrackingBtn']",
+    "a.btn-red:has-text('Search')",
+    "button:has-text('Search')",
+    "input[value='Search']",
 )
 
 
@@ -204,6 +205,16 @@ def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
     return events
 
 
+def is_oocl_site_error_page(text: str, html: str = "") -> bool:
+    """True for OOCL's own 404 / removed-page shell, not a container miss."""
+    blob = f"{text}\n{html}".lower()
+    return (
+        ("oops" in blob and "page not found" in blob)
+        or "oocl404" in blob
+        or "the page you are looking for might have been removed" in blob
+    )
+
+
 def parse_oocl_html(html: str) -> list[CanonicalEvent]:
     """Parse OOCL cargo-tracking event rows from an HTML snapshot."""
     events = _parse_oocl_tables(html)
@@ -244,6 +255,25 @@ class OoclTracker(BaseTracker):
         if not await self.open_tracking_or_reuse("oocl.com"):
             return
         await self.dismiss_cookies(wait_ms=12_000)
+
+    async def dismiss_cookies(self, wait_ms: int = COOKIE_BANNER_WAIT_MS) -> None:
+        await super().dismiss_cookies(wait_ms=wait_ms)
+        try:
+            allow = self.page.locator("#allowAll")
+            if await allow.first.is_visible(timeout=0):
+                await allow.first.click(timeout=3_000, force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await self.page.evaluate(
+                """() => {
+                    if (typeof allowAllCookiePolicy === "function") {
+                        allowAllCookiePolicy();
+                    }
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _select_container_search(self) -> None:
         toggle = self.page.locator("button[data-id='ooclCargoSelector']")
@@ -290,6 +320,15 @@ class OoclTracker(BaseTracker):
                     if (type) type.value = value;
                     const select = document.getElementById("ooclCargoSelector");
                     if (select) select.value = value;
+                    if (window.jQuery) {
+                        window.jQuery("#ooclCargoSelector").val(value);
+                        if (window.jQuery.fn && window.jQuery.fn.selectpicker) {
+                            window.jQuery("#ooclCargoSelector").selectpicker("refresh");
+                        }
+                    }
+                    if (typeof changeTrackingType === "function") {
+                        changeTrackingType();
+                    }
                 }""",
                 value,
             )
@@ -312,13 +351,6 @@ class OoclTracker(BaseTracker):
         except Exception:  # noqa: BLE001
             return None
 
-    async def _open_express_link(self, container: str) -> None:
-        await self.page.goto(
-            EXPRESS_LINK.format(number=quote(container)),
-            wait_until="domcontentloaded",
-        )
-        await self.dismiss_cookies(wait_ms=0)
-
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self.dismiss_cookies(wait_ms=0)
@@ -330,36 +362,26 @@ class OoclTracker(BaseTracker):
             await self._select_container_search()
             field = await self._first_visible_search_field()
         if field is None:
-            await self._open_express_link(container)
-            self._search_submitted = True
-            await self._wait_for_results()
-            return
+            raise TrackerError("Could not find the container search field.", "SELECTOR")
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
         await self._submit_search()
         self._search_submitted = True
-        if not await self._has_tracking_result() and not await self._page_challenge_code():
-            await self._open_express_link(container)
         await self._wait_for_results()
 
     async def _submit_search(self) -> None:
-        button = self.page.locator(
-            "#btn_cargoTracking, a#ListeningCargoTrackingBtn, "
-            "a[onclick*='ListeningCargoTrackingBtn'], "
-            "button:has-text('Search'), input[value='Search']"
-        )
+        button = self.page.locator(", ".join(_SUBMIT_BUTTON_SELECTORS))
+        clicked = False
         try:
-            async with self.page.expect_popup(timeout=8_000) as popup_info:
-                if await button.first.is_visible(timeout=1_500):
-                    await button.first.click(timeout=8_000)
-                else:
-                    await self.page.keyboard.press("Enter")
-            page = await popup_info.value
-            self.page = page
+            async with self.page.expect_popup(timeout=4_000) as popup_info:
+                await button.first.click(timeout=8_000)
+                clicked = True
+            self.page = await popup_info.value
             return
         except Exception:  # noqa: BLE001
-            pass
+            if clicked:
+                return
         try:
             if await button.first.is_visible(timeout=800):
                 await button.first.click(timeout=8_000)
@@ -372,6 +394,8 @@ class OoclTracker(BaseTracker):
         try:
             text = (await self._visible_text()).lower()
         except Exception:  # noqa: BLE001
+            return False
+        if is_oocl_site_error_page(text):
             return False
         return any(
             token in text
@@ -390,6 +414,7 @@ class OoclTracker(BaseTracker):
             await self.page.wait_for_function(
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
+                    const dead = text.includes("page not found") || text.includes("oops!");
                     return (
                         text.includes("vessel departed") ||
                         text.includes("vessel departure") ||
@@ -397,7 +422,8 @@ class OoclTracker(BaseTracker):
                         text.includes("container movement") ||
                         text.includes("unrecognized") ||
                         text.includes("no result") ||
-                        text.includes("not found") ||
+                        text.includes("no tracking") ||
+                        dead ||
                         (DETECT_CHALLENGE)()
                     );
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
@@ -409,6 +435,8 @@ class OoclTracker(BaseTracker):
     async def parse_events(self) -> list[CanonicalEvent]:
         html = await self.page.content()
         text = await self._visible_text()
+        if is_oocl_site_error_page(text, html):
+            raise TrackerError("OOCL tracking page was not found.", "NAVIGATION")
         if "unrecognized" in text.lower():
             raise TrackerError("OOCL rejected this tracking request.", "NAVIGATION")
         events = parse_oocl_html(html)

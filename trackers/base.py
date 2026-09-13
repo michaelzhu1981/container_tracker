@@ -153,6 +153,7 @@ def is_query_screenshot_page(text: str, html: str = "") -> bool:
 
 _NO_RESULT_IGNORES = (
     "provisional moves not found",
+    "page not found",
 )
 
 
