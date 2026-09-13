@@ -208,6 +208,33 @@
       color: var(--muted);
       font-weight: 650;
     }
+    .dash th.sortable { padding: 0; }
+    .dash .sort-button {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      width: 100%;
+      padding: 3px 6px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+    }
+    .dash th:first-child .sort-button,
+    .dash th.bar .sort-button { justify-content: flex-start; }
+    .dash .sort-button::after {
+      content: "↕";
+      opacity: 0.35;
+      font-size: 9px;
+    }
+    .dash .sort-button[data-sort-direction="asc"]::after { content: "↑"; opacity: 1; }
+    .dash .sort-button[data-sort-direction="desc"]::after { content: "↓"; opacity: 1; }
+    .dash .sort-button:hover,
+    .dash .sort-button:focus-visible { color: var(--ink); background: var(--accent-soft); }
     .dash tbody tr { cursor: pointer; }
     .dash tbody tr.active td { background: var(--accent-soft); }
     .dash .zero { color: var(--muted); }
@@ -249,18 +276,18 @@
       <table>
         <thead>
           <tr>
-            <th>Carrier</th>
-            <th>Containers</th>
-            <th>Done</th>
-            <th>Querying</th>
-            <th>Pending</th>
-            <th>Sailed</th>
-            <th>Loaded</th>
-            <th>Not loaded</th>
-            <th>Manual</th>
-            <th>Failed</th>
-            <th class="bar">Progress</th>
-            <th class="time has-tip" data-tip="Total time this carrier spent querying in the current job, and the average time per queried container.">Time</th>
+            <th class="sortable" aria-sort="ascending"><button type="button" class="sort-button" data-dash-sort="carrier" data-sort-direction="asc">Carrier</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="total">Containers</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="done">Done</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="QUERYING">Querying</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="PENDING">Pending</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="SAILED">Sailed</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="LOADED_WAITING_DEPARTURE">Loaded</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="NOT_LOADED">Not loaded</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="MANUAL_CHECK_REQUIRED">Manual</button></th>
+            <th class="sortable"><button type="button" class="sort-button" data-dash-sort="CHECK_FAILED">Failed</button></th>
+            <th class="bar sortable"><button type="button" class="sort-button" data-dash-sort="progress">Progress</button></th>
+            <th class="time sortable"><button type="button" class="sort-button has-tip" data-dash-sort="time" data-tip="Total time this carrier spent querying in the current job, and the average time per queried container.">Time</button></th>
           </tr>
         </thead>
         <tbody id="dashRows"></tbody>
@@ -353,6 +380,7 @@
     let lastFilter = "ALL";
     let lastCarrierFilter = "";
     let lastCurrent = "";
+    let dashSort = { key: "carrier", direction: "asc" };
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -425,9 +453,51 @@
       return codes.map((code) => by.get(code));
     }
 
+    function sortCarrierSummary(items, times) {
+      const carrierCompare = (a, b) => a.carrier.localeCompare(b.carrier);
+      const value = (item) => {
+        if (dashSort.key === "done") return item.total - item.QUERYING - item.PENDING;
+        if (dashSort.key === "progress") {
+          const done = item.total - item.QUERYING - item.PENDING;
+          return item.total ? done / item.total : 0;
+        }
+        if (dashSort.key === "time") {
+          const timing = times && times[item.carrier];
+          return timing && timing.queried ? Number(timing.total_ms) : null;
+        }
+        return Number(item[dashSort.key] || 0);
+      };
+      return [...items].sort((a, b) => {
+        if (dashSort.key === "carrier") {
+          return carrierCompare(a, b) * (dashSort.direction === "asc" ? 1 : -1);
+        }
+        const left = value(a);
+        const right = value(b);
+        if (left == null || Number.isNaN(left)) return right == null || Number.isNaN(right) ? carrierCompare(a, b) : 1;
+        if (right == null || Number.isNaN(right)) return -1;
+        const compared = left - right;
+        return compared ? compared * (dashSort.direction === "asc" ? 1 : -1) : carrierCompare(a, b);
+      });
+    }
+
+    function updateDashSortHeaders() {
+      dashEl.querySelectorAll("[data-dash-sort]").forEach((button) => {
+        const active = button.dataset.dashSort === dashSort.key;
+        const th = button.closest("th");
+        if (active) {
+          button.dataset.sortDirection = dashSort.direction;
+          th.setAttribute("aria-sort", dashSort.direction === "asc" ? "ascending" : "descending");
+        } else {
+          delete button.dataset.sortDirection;
+          th.removeAttribute("aria-sort");
+        }
+      });
+    }
+
     function renderDash(rows, order, times) {
-      const items = carrierSummary(rows, order);
+      const items = sortCarrierSummary(carrierSummary(rows, order), times);
       dashEl.hidden = items.length === 0;
+      updateDashSortHeaders();
       dashRowsEl.innerHTML = items.map((item) => {
         const done = item.total - item.QUERYING - item.PENDING;
         const pct = item.total ? Math.round((done / item.total) * 100) : 0;
@@ -602,6 +672,16 @@
       if (!row) return;
       carrierFilter = carrierFilter === row.dataset.carrier ? "" : row.dataset.carrier;
       page = 1;
+      refresh();
+    });
+    dashEl.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-dash-sort]");
+      if (!button) return;
+      const key = button.dataset.dashSort;
+      dashSort = {
+        key,
+        direction: dashSort.key === key && dashSort.direction === "asc" ? "desc" : "asc",
+      };
       refresh();
     });
     countsEl.addEventListener("click", (event) => {
