@@ -186,6 +186,32 @@
       padding: 3px 6px;
     }
     .pager-info { color: var(--muted); }
+    .dash { border: 1px solid var(--line); background: var(--paper); }
+    .dash-head {
+      padding: 6px 8px;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 650;
+      border-bottom: 1px solid var(--line);
+    }
+    .dash table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums; }
+    .dash th, .dash td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .dash th:first-child, .dash td:first-child, .dash th.bar, .dash td.bar { text-align: left; }
+    .dash th {
+      background: #f7f4ee;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 650;
+    }
+    .dash tbody tr { cursor: pointer; }
+    .dash tbody tr.active td { background: var(--accent-soft); }
+    .dash .zero { color: var(--muted); }
+    .dash .mini { display: block; height: 3px; width: 72px; background: var(--line); }
+    .dash .mini > i { display: block; height: 100%; background: var(--accent); }
   </style>
 </head>
 <body>
@@ -211,6 +237,27 @@
         <span class="sub has-tip" data-tip="Choose which carriers to query when you start a job. This does not filter the table. All selected or none selected queries every carrier.">Carriers</span>
         <div id="carrierChips" class="carriers"></div>
       </div>
+    </div>
+    <div id="dash" class="dash" hidden>
+      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Click a row to filter the table; click again to show all carriers.">Summary by carrier</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Carrier</th>
+            <th>Boxes</th>
+            <th>Done</th>
+            <th>Querying</th>
+            <th>Pending</th>
+            <th>Sailed</th>
+            <th>Loaded</th>
+            <th>Not loaded</th>
+            <th>Manual</th>
+            <th>Failed</th>
+            <th class="bar">Progress</th>
+          </tr>
+        </thead>
+        <tbody id="dashRows"></tbody>
+      </table>
     </div>
     <div id="counts" class="counts"></div>
     <div class="progress" aria-hidden="true"><i id="bar"></i></div>
@@ -290,10 +337,14 @@
     const nextPageBtn = document.getElementById("nextPage");
     const lastPageBtn = document.getElementById("lastPage");
     const pageSizeEl = document.getElementById("pageSize");
+    const dashEl = document.getElementById("dash");
+    const dashRowsEl = document.getElementById("dashRows");
     let filter = "ALL";
+    let carrierFilter = "";
     let knownCarriers = [];
     let page = 1;
     let lastFilter = "ALL";
+    let lastCarrierFilter = "";
     let lastCurrent = null;
 
     function esc(value) {
@@ -317,6 +368,60 @@
       const on = [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
       if (!on.length || on.length === knownCarriers.length) return null;
       return on;
+    }
+
+    function countCell(value) {
+      const n = value || 0;
+      return `<td class="${n ? "" : "zero"}">${n}</td>`;
+    }
+
+    function carrierSummary(rows, order) {
+      const by = new Map();
+      for (const row of rows) {
+        if (!by.has(row.carrier)) {
+          by.set(row.carrier, {
+            carrier: row.carrier,
+            total: 0,
+            QUERYING: 0,
+            PENDING: 0,
+            SAILED: 0,
+            LOADED_WAITING_DEPARTURE: 0,
+            NOT_LOADED: 0,
+            MANUAL_CHECK_REQUIRED: 0,
+            CHECK_FAILED: 0,
+          });
+        }
+        const item = by.get(row.carrier);
+        item.total += 1;
+        if (row.phase === "querying") item.QUERYING += 1;
+        else if (row.phase === "pending") item.PENDING += 1;
+        else if (item[row.status] != null) item[row.status] += 1;
+      }
+      const codes = [...new Set([...(order || []), ...by.keys()])].filter((code) => by.has(code));
+      return codes.map((code) => by.get(code));
+    }
+
+    function renderDash(rows, order) {
+      const items = carrierSummary(rows, order);
+      dashEl.hidden = items.length === 0;
+      dashRowsEl.innerHTML = items.map((item) => {
+        const done = item.total - item.QUERYING - item.PENDING;
+        const pct = item.total ? Math.round((done / item.total) * 100) : 0;
+        const active = carrierFilter === item.carrier ? " active" : "";
+        return `<tr class="${active}" data-carrier="${esc(item.carrier)}">
+          <td>${esc(item.carrier)}</td>
+          ${countCell(item.total)}
+          <td>${done}/${item.total}</td>
+          ${countCell(item.QUERYING)}
+          ${countCell(item.PENDING)}
+          ${countCell(item.SAILED)}
+          ${countCell(item.LOADED_WAITING_DEPARTURE)}
+          ${countCell(item.NOT_LOADED)}
+          ${countCell(item.MANUAL_CHECK_REQUIRED)}
+          ${countCell(item.CHECK_FAILED)}
+          <td class="bar"><span class="mini"><i style="width:${pct}%"></i></span></td>
+        </tr>`;
+      }).join("");
     }
 
     function renderChips(carriers, preserve) {
@@ -356,16 +461,20 @@
         ),
       ].join("");
 
+      renderDash(data.rows || [], data.carriers || knownCarriers);
+
       const rows = (data.rows || []).filter((row) => {
+        if (carrierFilter && row.carrier !== carrierFilter) return false;
         if (filter === "ALL") return true;
         if (filter === "QUERYING") return row.phase === "querying";
         if (filter === "PENDING") return row.phase === "pending";
         return row.status === filter;
       });
       const pageSize = Number(pageSizeEl.value) || 20;
-      if (filter !== lastFilter) {
+      if (filter !== lastFilter || carrierFilter !== lastCarrierFilter) {
         page = 1;
         lastFilter = filter;
+        lastCarrierFilter = carrierFilter;
       }
       if (job.current_index != null && job.current_index !== lastCurrent) {
         const pos = rows.findIndex((row) => row.index === job.current_index);
@@ -454,6 +563,13 @@
       try { render(await api("/api/reload", { method: "POST", body: "{}" })); }
       catch (err) { messageEl.textContent = String(err.message || err); }
     });
+    dashRowsEl.addEventListener("click", (event) => {
+      const row = event.target.closest("[data-carrier]");
+      if (!row) return;
+      carrierFilter = carrierFilter === row.dataset.carrier ? "" : row.dataset.carrier;
+      page = 1;
+      refresh();
+    });
     countsEl.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-filter]");
       if (!btn) return;
@@ -501,7 +617,7 @@
       optTip.style.left = `${Math.max(12, left)}px`;
       optTip.style.top = `${top}px`;
     }
-    const tipRoot = document.querySelector(".panel");
+    const tipRoot = document.querySelector(".wrap");
     tipRoot.addEventListener("mouseover", (event) => {
       const el = event.target.closest("[data-tip]");
       if (el && tipRoot.contains(el)) showOptTip(el);
