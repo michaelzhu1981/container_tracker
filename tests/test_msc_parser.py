@@ -26,12 +26,13 @@ def test_parse_sailed_fixture():
     assert result.voyage == "046E"
 
 
-def test_parse_on_board_waiting():
+def test_parse_export_loaded_counts_as_sailed():
     html = (FIXTURES / "on_board_waiting.html").read_text(encoding="utf-8")
     events = parse_msc_html(html)
     assert events[0].type == "LOAD"
     assert events[0].event_date == "2026-08-25"
     assert events[0].vessel == "ONE MANHATTAN"
+    assert any(event.type == "DEPA" and event.event_date == "2026-08-25" for event in events)
     result = evaluate(
         events,
         container="MEDU1111111",
@@ -39,8 +40,10 @@ def test_parse_on_board_waiting():
         timeline_order="newest_first",
         checked_at="2026-09-13 00:00:00",
     )
-    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.status == "SAILED"
+    assert result.atd == "2026-08-25"
     assert result.vessel == "ONE MANHATTAN"
+    assert result.pol == "YANTIAN"
 
 
 def test_parse_empty_returned_is_not_loaded():
@@ -72,8 +75,11 @@ def test_skips_empty_alpine_template_before_vessel():
     </div>
     """
     events = parse_msc_html(html)
+    assert events[0].type == "LOAD"
     assert events[0].vessel == "MSC BETTINA"
     assert events[0].voyage == "QX621W"
+    assert events[1].type == "DEPA"
+    assert events[1].voyage == "QX621W"
 
 
 def test_discharge_without_departure_is_sailed():
@@ -91,7 +97,7 @@ def test_discharge_without_departure_is_sailed():
         checked_at="2026-09-13 00:00:00",
     )
     assert result.status == "SAILED"
-    assert result.atd is None
+    assert result.atd == "2026-06-01"
     assert result.vessel == "MSC BETTINA"
     assert result.voyage == "QX621W"
     assert result.pol == "SHANGHAI"

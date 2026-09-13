@@ -628,13 +628,13 @@ ONEY（日期容器 `text-ds-grey-darker-1` = ACT，`text-ds-grey-darker-2/3` = 
 | Full Container Delivery to Consignee | EST | GTOT | UNKNOWN | false |
 | Empty Container Returned from Customer | EST/ACT | GTIN | UNKNOWN | true |
 
-MSCU（时间线新→旧；部分箱只有 Export Loaded + 目的港 Import Discharged，没有 Vessel Departed，此时若卸船港不同则判 `SAILED` 且 ATD 留空）：
+MSCU（时间线新→旧。没有 Vessel Departed 时，Actual **Export Loaded on Vessel** 视为已开船，ATD 用该事件日期；若页面已有 Actual Vessel Departed，仍用离港时间）：
 
 | 页面原文 | classifier | type | transport_mode | empty |
 |---|---|---|---|---|
 | Empty to Shipper | ACT | GTOT | UNKNOWN | true |
 | Export received at CY | ACT | GTIN | UNKNOWN | false |
-| Export Loaded on Vessel | ACT | LOAD | VESSEL | — |
+| Export Loaded on Vessel | ACT | LOAD（并补 DEPA） | VESSEL | — |
 | Vessel Departed | ACT | DEPA | VESSEL | — |
 | Import Discharged from Vessel | ACT | DISC | VESSEL | — |
 | Import to consignee | ACT | GTOT | UNKNOWN | false |

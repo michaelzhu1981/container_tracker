@@ -11,11 +11,11 @@
 | `HLCU` | Hapag-Lloyd | 已实现；默认打开可见 Chrome |
 | `YMJA` | Yang Ming | 已实现；默认无头 |
 | `ONEY` | ONE | 已实现；默认无头 |
-| `MSCU` | MSC | 已实现；默认打开可见 Chrome |
+| `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
 | `MAEU` | Maersk | 尚未实现，记 `SELECTOR` |
 | `CMDU` | CMA CGM | 尚未实现，记 `SELECTOR` |
 
-每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU / MSCU 更容易碰到 Cloudflare，因此默认 headed。
+每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU 无头会被 Akamai 拒绝，因此这两家默认 headed。
 
 ## 安装
 

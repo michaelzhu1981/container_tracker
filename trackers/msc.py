@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 from event_text import (
     classify_classifier,
@@ -234,6 +235,34 @@ def _events_from_json(payload: object) -> list[CanonicalEvent]:
     return events
 
 
+def _has_actual_ocean_departure(events: list[CanonicalEvent]) -> bool:
+    return any(
+        event.classifier == "ACT"
+        and event.type == "DEPA"
+        and event.empty is not True
+        and event.transport_mode in {"MOTHER", "FEEDER", "VESSEL"}
+        for event in events
+    )
+
+
+def _treat_export_load_as_departure(events: list[CanonicalEvent]) -> list[CanonicalEvent]:
+    """MSC often omits Vessel Departed; Actual export load is the sail signal."""
+    if _has_actual_ocean_departure(events):
+        return events
+    expanded: list[CanonicalEvent] = []
+    for event in events:
+        expanded.append(event)
+        if (
+            event.classifier == "ACT"
+            and event.type == "LOAD"
+            and event.empty is not True
+            and event.transport_mode in {"MOTHER", "FEEDER", "VESSEL"}
+            and "export loaded" in event.raw_text.lower()
+        ):
+            expanded.append(replace(event, type="DEPA"))
+    return expanded
+
+
 def parse_msc_html(html: str) -> list[CanonicalEvent]:
     """Parse movement steps from an MSC tracking HTML snapshot."""
     events = _parse_steps(html)
@@ -250,7 +279,7 @@ def parse_msc_html(html: str) -> list[CanonicalEvent]:
                 continue
             if events:
                 break
-    return events
+    return _treat_export_load_as_departure(events)
 
 
 class MscTracker(BaseTracker):
@@ -285,6 +314,12 @@ class MscTracker(BaseTracker):
 
     async def open_page(self) -> None:
         await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        html = (await self.page.content()).lower()
+        if "access denied" in html or "errors.edgesuite.net" in html:
+            raise TrackerError(
+                "MSC blocked this browser (Access Denied). Use a headed Chrome window.",
+                "NAVIGATION",
+            )
         await self.dismiss_cookies(wait_ms=12_000)
 
     async def search(self, container: str) -> None:
