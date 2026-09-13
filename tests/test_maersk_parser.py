@@ -95,3 +95,85 @@ def test_parse_synergy_json_directly():
     assert [event.type for event in events] == ["LOAD", "DEPA"]
     assert events[1].vessel == "MAERSK ESSEN"
     assert events[1].voyage == "123W"
+
+
+def _wire_event(activity, day, *, time_type="ACTUAL", empty=False, mode="MVS"):
+    return {
+        "activity": activity,
+        "event_time": f"2026-09-{day:02d}T11:03:00.000",
+        "event_time_type": time_type,
+        "stempty": empty,
+        "transport_mode": mode,
+        "vessel_name": "TEST VESSEL" if mode == "MVS" else "",
+        "voyage_num": "123E" if mode == "MVS" else "",
+    }
+
+
+def _wire_events(*items):
+    return parse_maersk_json({
+        "containers": [{"locations": [{"city": "Haiphong", "events": list(items)}]}]
+    })
+
+
+def _evaluate_wire(events):
+    return evaluate(events, container="MSKU1234567", carrier="MAEU", checked_at="2026-09-13")
+
+
+def test_wire_departure_provides_atd_and_excludes_expected_events():
+    events = _wire_events(
+        _wire_event("LOAD", 12),
+        _wire_event("CONTAINER DEPARTURE", 13),
+        _wire_event("CONTAINER ARRIVAL", 18, time_type="EXPECTED"),
+    )
+    assert [(e.type, e.classifier) for e in events] == [
+        ("LOAD", "ACT"), ("DEPA", "ACT"), ("ARRI", "EST")
+    ]
+    result = _evaluate_wire(events)
+    assert result.status == "SAILED"
+    assert result.atd == "2026-09-13 11:03"
+    assert result.vessel == "TEST VESSEL"
+    assert "CONTAINER DEPARTURE" in result.latest_event
+
+
+def test_expected_departure_does_not_mark_loaded_container_sailed():
+    events = _wire_events(
+        _wire_event("LOAD", 12),
+        _wire_event("CONTAINER DEPARTURE", 18, time_type="EXPECTED"),
+        _wire_event("CONTAINER ARRIVAL", 23, time_type="EXPECTED"),
+    )
+    assert _evaluate_wire(events).status == "LOADED_WAITING_DEPARTURE"
+
+
+def test_wire_empty_return_ends_previous_journey():
+    events = _wire_events(
+        _wire_event("LOAD", 1),
+        _wire_event("CONTAINER DEPARTURE", 2),
+        _wire_event("CONTAINER RETURN", 12, empty=True, mode="TRK"),
+    )
+    assert events[-1].empty is True
+    assert events[-1].type == "GTIN"
+    result = _evaluate_wire(events)
+    assert result.status == "NOT_LOADED"
+    assert result.sailed is False
+    assert "CONTAINER RETURN" in result.latest_event
+
+
+def test_wire_truck_departure_is_not_ocean_departure():
+    event = _wire_event("CONTAINER DEPARTURE", 12, mode="TRK")
+    events = _wire_events(event)
+    assert events[0].transport_mode == "TRUCK"
+    assert _evaluate_wire(events).status == "NOT_LOADED"
+
+
+def test_wire_discharge_and_customer_gate_out_codes():
+    events = _wire_events(
+        _wire_event("DISCHARG", 12),
+        _wire_event("CUSTOMER_GATE_OUT", 13, mode="TRK"),
+    )
+    assert [e.type for e in events] == ["DISC", "GTOT"]
+    assert events[1].empty is False
+
+
+def test_unknown_wire_time_type_is_not_assumed_actual():
+    events = _wire_events(_wire_event("CONTAINER DEPARTURE", 12, time_type="UNRECOGNIZED"))
+    assert events[0].classifier == "UNKNOWN"

@@ -89,6 +89,7 @@ class JobManager:
         self.results: list[TrackResult | None] = []
         self.current_index: int | None = None
         self.phase: str | None = None
+        self.challenge: dict | None = None
         self.started_at: str | None = None
         self.finished_at: str | None = None
         self.error: str | None = None
@@ -114,6 +115,7 @@ class JobManager:
         self.rows, self.results = load_board(self.input_path, self.output_path)
         self.current_index = None
         self.phase = None
+        self.challenge = None
         self.error = None
         self.output = relative_to_root(self.output_path) or str(self.output_path)
         n = len(self.rows)
@@ -165,6 +167,7 @@ class JobManager:
         self.state = "running"
         self.current_index = None
         self.phase = None
+        self.challenge = None
         self.started_at = _now()
         self.finished_at = None
         self.error = None
@@ -191,11 +194,26 @@ class JobManager:
         idx = payload.get("index")
         phase = payload.get("phase")
         self.phase = phase
+        self.challenge = payload.get("challenge") if phase == "challenge" else None
         if isinstance(idx, int):
             self.current_index = idx
             row = self.rows[idx]
             if phase == "querying":
                 self.message = f"Querying {row['Carrier']} {row['Container']}"
+            elif phase == "challenge" and self.challenge:
+                code = self.challenge["code"]
+                mode = self.challenge.get("mode")
+                seconds = self.challenge.get("timeout_seconds", 0)
+                if mode == "current_browser":
+                    action = (
+                        "Complete verification in the current Chrome window; keep it open. "
+                        f"Resumes automatically (up to {seconds}s). Stop cancels the wait."
+                    )
+                elif mode == "system_chrome":
+                    action = "Complete verification in the new system Chrome, then quit that Chrome to resume."
+                else:
+                    action = f"Waiting up to {seconds}s for the security check."
+                self.message = f"{row['Carrier']} {row['Container']}: {code}. {action}"
             elif phase == "done" and payload.get("result") is not None:
                 self.results[idx] = payload["result"]
                 result = payload["result"]
@@ -233,6 +251,7 @@ class JobManager:
         finally:
             self.current_index = None
             self.phase = None
+            self.challenge = None
             self.finished_at = _now()
             self.task = None
 
@@ -241,9 +260,9 @@ class JobManager:
         rows_out: list[dict[str, Any]] = []
         for idx, row in enumerate(self.rows):
             result = self.results[idx] if idx < len(self.results) else None
-            querying = self.current_index == idx and self.phase == "querying"
+            querying = self.current_index == idx and self.phase in {"querying", "challenge"}
             if querying:
-                phase = "querying"
+                phase = self.phase
                 counts["QUERYING"] += 1
             elif result is None:
                 phase = "pending"
@@ -280,6 +299,7 @@ class JobManager:
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
                 "current_index": self.current_index,
+                "challenge": self.challenge,
                 "total": len(self.rows),
                 "done": done,
                 "input": relative_to_root(self.input_path) or str(self.input_path),

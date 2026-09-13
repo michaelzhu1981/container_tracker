@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from artifacts import checked_at, html_path, relative_to_root, screenshot_path
 from config import AUTO_CHALLENGE_WAIT_MS, CHALLENGE_RETRY_DELAYS, CHALLENGE_WAIT_MS
+from challenges import CHALLENGE_CODE_JS, CHALLENGE_GONE_JS, challenge_code
 from models import CanonicalEvent, TimelineOrder, TrackResult
 from status_engine import evaluate
 
@@ -129,48 +132,7 @@ def looks_like_no_result(text: str) -> bool:
     return any(token in blob for token in _NO_RESULT_TOKENS)
 
 
-_CHALLENGE_GONE_JS = """() => {
-    const text = (document.body && document.body.innerText || "").toLowerCase();
-    const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
-    const blocked = (
-        text.includes("checking your browser") ||
-        text.includes("managed challenge") ||
-        text.includes("verify you are human") ||
-        text.includes("security check") ||
-        text.includes("access denied") ||
-        html.includes("cf-challenge") ||
-        html.includes("captcha-delivery.com") ||
-        html.includes("datadome captcha") ||
-        html.includes("errors.edgesuite.net")
-    );
-    return !blocked;
-}"""
-
-
-def challenge_code(text: str) -> str | None:
-    """Return CLOUDFLARE, CAPTCHA, or None from visible page text or HTML."""
-    blob = text.lower()
-    if (
-        "checking your browser" in blob
-        or "managed challenge" in blob
-        or "verify you are human" in blob
-        or "security check" in blob
-        or ("attention required" in blob and "cloudflare" in blob)
-        or "errors.edgesuite.net" in blob
-        or (
-            "access denied" in blob
-            and ("edgesuite" in blob or "akamai" in blob or "reference #" in blob)
-        )
-    ):
-        return "CLOUDFLARE"
-    if (
-        "recaptcha" in blob
-        or "hcaptcha" in blob
-        or "captcha-delivery.com" in blob
-        or "datadome captcha" in blob
-    ):
-        return "CAPTCHA"
-    return None
+_CHALLENGE_GONE_JS = CHALLENGE_GONE_JS
 
 
 class TrackerError(Exception):
@@ -184,6 +146,7 @@ class BaseTracker(ABC):
     timeline_order: TimelineOrder = "oldest_first"
     tracking_url: str = ""
     screenshot_selectors: tuple[str, ...] = ()
+    wait_in_current_browser: bool = False
 
     def __init__(
         self,
@@ -197,6 +160,7 @@ class BaseTracker(ABC):
         self.browser = browser
         self._screenshot: Path | None = None
         self._html: Path | None = None
+        self._human_wait_used = False
 
     async def dismiss_cookies(self, wait_ms: int = 3000) -> None:
         try:
@@ -245,12 +209,36 @@ class BaseTracker(ABC):
         if code == "CAPTCHA":
             raise TrackerError("CAPTCHA detected.", "CAPTCHA")
 
+    def _check_cancelled(self) -> None:
+        should_abort = getattr(self.browser, "should_abort", None)
+        if callable(should_abort) and should_abort():
+            raise TrackerError("Stopped while waiting for the security check.", "CANCELLED")
+
+    def _report_challenge(self, code: str | None, mode: str = "", timeout_ms: int = 0) -> None:
+        report = getattr(self.browser, "on_challenge", None)
+        if callable(report):
+            report({"code": code, "mode": mode, "timeout_seconds": timeout_ms // 1000})
+
     async def _wait_challenge_gone(self, timeout_ms: int) -> bool:
+        self._check_cancelled()
+        wait = asyncio.create_task(
+            self.page.wait_for_function(_CHALLENGE_GONE_JS, timeout=timeout_ms, polling=500)
+        )
         try:
-            await self.page.wait_for_function(_CHALLENGE_GONE_JS, timeout=timeout_ms)
+            while not wait.done():
+                await asyncio.wait({wait}, timeout=0.25)
+                self._check_cancelled()
+            await wait
             return True
+        except TrackerError:
+            raise
         except Exception:  # noqa: BLE001
             return False
+        finally:
+            if not wait.done():
+                wait.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await wait
 
     async def _after_challenge_cleared(self) -> str | None:
         await self.page.wait_for_timeout(1000)
@@ -288,39 +276,69 @@ class BaseTracker(ABC):
             LOGGER.info("Reload after challenge failed for %s", self.carrier_code)
 
     async def _page_challenge_code(self) -> str | None:
-        text = await self._visible_text()
-        code = challenge_code(text)
-        if code:
-            return code
         try:
-            return challenge_code(await self.page.content())
+            code = await self.page.evaluate(CHALLENGE_CODE_JS)
+            if code in {None, "CAPTCHA", "CLOUDFLARE"}:
+                return code
+        except Exception:  # noqa: BLE001
+            pass
+        # A snapshot fallback is useful during navigation and for saved HTML.
+        try:
+            return challenge_code(await self._visible_text()) or challenge_code(await self.page.content())
         except Exception:  # noqa: BLE001
             return None
 
-    async def pass_or_wait_for_challenge(self) -> None:
+    async def pass_or_wait_for_challenge(self) -> bool:
         code = await self._page_challenge_code()
         if not code:
-            return
+            return False
+
+        self._check_cancelled()
+        if self._human_wait_used:
+            raise TrackerError(
+                f"{code} returned after verification; retry this carrier later.", code
+            )
 
         auto_s = AUTO_CHALLENGE_WAIT_MS // 1000
         LOGGER.info("Waiting up to %ss for %s to clear automatically", auto_s, code)
+        self._report_challenge(code, "automatic", AUTO_CHALLENGE_WAIT_MS)
         if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
             leftover = await self._after_challenge_cleared()
             if not leftover:
-                return
+                self._report_challenge(None)
+                return True
             code = leftover
 
         if self.wait_for_challenge:
-            if self.browser is not None and hasattr(
+            self._human_wait_used = True
+            if self.wait_in_current_browser:
+                seconds = CHALLENGE_WAIT_MS // 1000
+                LOGGER.info(
+                    "Waiting up to %ss for %s in the current %s window; keep it open",
+                    seconds, code, self.carrier_code,
+                )
+                self._report_challenge(code, "current_browser", CHALLENGE_WAIT_MS)
+                print(
+                    f"Complete {code} in the current {self.carrier_code} Chrome window. "
+                    "Keep it open; tracking resumes automatically. Stop cancels this wait."
+                )
+                if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
+                    leftover = await self._after_challenge_cleared()
+                    if not leftover:
+                        self._report_challenge(None)
+                        return True
+            elif self.browser is not None and hasattr(
                 self.browser, "hand_off_to_system_chrome"
             ):
                 LOGGER.info("Handing %s off to system Chrome for a human check", code)
+                self._report_challenge(code, "system_chrome")
                 handed = await self.browser.hand_off_to_system_chrome(self.tracking_url)
                 if handed:
                     self.page = self.browser.page
                     leftover = await self._after_challenge_cleared()
                     if not leftover:
-                        return
+                        self._report_challenge(None)
+                        return True
             else:
                 seconds = CHALLENGE_WAIT_MS // 1000
                 print(
@@ -332,11 +350,19 @@ class BaseTracker(ABC):
                 if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
                     leftover = await self._after_challenge_cleared()
                     if not leftover:
-                        return
+                        self._report_challenge(None)
+                        return True
             still = await self._page_challenge_code() or code
             raise TrackerError(
                 f"Timed out waiting for the {still} check to clear.",
                 still,
+            )
+
+        # An interactive CAPTCHA cannot clear through repeated reloads.
+        if code == "CAPTCHA":
+            raise TrackerError(
+                "CAPTCHA requires verification in the browser. Enable Wait for challenge and retry.",
+                code,
             )
 
         for delay in CHALLENGE_RETRY_DELAYS:
@@ -346,7 +372,8 @@ class BaseTracker(ABC):
             if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
                 leftover = await self._after_challenge_cleared()
                 if not leftover:
-                    return
+                    self._report_challenge(None)
+                    return True
 
         still = await self._page_challenge_code() or code
         raise TrackerError(
@@ -422,16 +449,37 @@ class BaseTracker(ABC):
         stamp = checked_at()
         try:
             await self.open_page()
-            if not challenge_code(await self._visible_text()):
+            if not await self._page_challenge_code():
                 await self.dismiss_cookies()
             await self.pass_or_wait_for_challenge()
+            searched_page = self.page
             await self.search(container)
             await self.dismiss_cookies(wait_ms=8_000)
             await self.page.wait_for_timeout(1500)
-            await self.pass_or_wait_for_challenge()
+            recovered = await self.pass_or_wait_for_challenge()
+            if recovered and (
+                self.page is not searched_page
+                or getattr(self, "_search_submitted", None) is False
+            ):
+                # A handoff/reload may have discarded the original query.
+                await self.open_page()
+                await self.search(container)
+                await self.pass_or_wait_for_challenge()
+                recovered = False
             if looks_like_no_result(await self._visible_text()):
                 raise TrackerError("No tracking result for this container.", "NO_RESULT")
-            events = await self.parse_events()
+            try:
+                events = await self.parse_events()
+            except TrackerError as exc:
+                if not recovered or exc.code != "PARSE":
+                    raise
+                # Some challenges return to an empty form instead of replaying
+                # the search. Resubmit once, retaining this browser session.
+                await self.search(container)
+                await self.pass_or_wait_for_challenge()
+                if looks_like_no_result(await self._visible_text()):
+                    raise TrackerError("No tracking result for this container.", "NO_RESULT")
+                events = await self.parse_events()
             await self.save_artifacts(container)
             if not events:
                 return evaluate(

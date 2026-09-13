@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from challenges import CHALLENGE_CODE_JS
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -70,6 +71,14 @@ def _voyage_and_vessel(mode_text: str) -> tuple[str | None, str | None]:
 def _maersk_classifier(joined: str, item: dict | None = None) -> Classifier:
     if item:
         lowered = {str(key).lower(): value for key, value in item.items()}
+        time_type = str(lowered.get("event_time_type") or "").strip().upper()
+        if time_type:
+            return {
+                "ACTUAL": "ACT",
+                "EXPECTED": "EST",
+                "ESTIMATED": "EST",
+                "PLANNED": "PLN",
+            }.get(time_type, "UNKNOWN")
         for key in ("is_estimated", "estimated", "isestimated", "is_estimate"):
             if lowered.get(key) is True:
                 return "EST"
@@ -97,8 +106,20 @@ def _event_from_fields(
     vessel_name = vessel or parsed_vessel
     voyage_no = voyage or parsed_voyage
     joined = " | ".join(part for part in (date_text, status, location, transport) if part)
-    event_type = classify_event_type(status)
+    event_type = {
+        "CONTAINER DEPARTURE": "DEPA",
+        "CONTAINER ARRIVAL": "ARRI",
+        "CONTAINER RETURN": "GTIN",
+        "DISCHARG": "DISC",
+        "CUSTOMER_GATE_OUT": "GTOT",
+    }.get(status.upper(), classify_event_type(status))
     transport_mode = classify_transport(f"{status} {transport}")
+    if item:
+        mode = str(item.get("transport_mode") or "").upper()
+        if mode == "MVS":
+            transport_mode = "VESSEL"
+        elif mode == "TRK":
+            transport_mode = "TRUCK"
     if transport_mode == "UNKNOWN" and event_type in {"LOAD", "DEPA", "ARRI", "DISC"}:
         if vessel_name or "vessel" in status.lower():
             transport_mode = "VESSEL"
@@ -117,7 +138,11 @@ def _event_from_fields(
         sequence_index=sequence,
         vessel=vessel_name,
         voyage=voyage_no,
-        empty=classify_empty(joined),
+        empty=(
+            item["stempty"]
+            if item and isinstance(item.get("stempty"), bool)
+            else classify_empty(joined)
+        ),
         transport_mode=transport_mode,
         raw_text=joined,
     )
@@ -262,6 +287,7 @@ def parse_maersk_html(html: str) -> list[CanonicalEvent]:
 
 class MaerskTracker(BaseTracker):
     carrier_code = "MAEU"
+    wait_in_current_browser = True
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
@@ -313,6 +339,8 @@ class MaerskTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=8_000)
 
     async def search(self, container: str) -> None:
+        self._search_submitted = False
+        await self._bind_tracking_response()
         self._clear_captured_json()
         if await self._page_challenge_code():
             return
@@ -351,10 +379,13 @@ class MaerskTracker(BaseTracker):
                 continue
         if not clicked:
             await field.press("Enter")
+        self._search_submitted = True
         await self._wait_for_results()
 
     async def _find_search_field(self):
         for selector in (
+            "input[name='track-input']",
+            "#track-input input",
             "input[placeholder*='container' i]",
             "input[placeholder*='BL' i]",
             "input[name*='container' i]",
@@ -378,7 +409,6 @@ class MaerskTracker(BaseTracker):
             await self.page.wait_for_function(
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
-                    const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
                     return (
                         text.includes("vessel departed") ||
                         text.includes("vessel departure") ||
@@ -389,11 +419,9 @@ class MaerskTracker(BaseTracker):
                         text.includes("could not find") ||
                         text.includes("no shipments") ||
                         text.includes("not found") ||
-                        html.includes("captcha-delivery.com") ||
-                        html.includes("cf-challenge") ||
-                        html.includes("errors.edgesuite.net")
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=45_000,
             )
         except Exception:  # noqa: BLE001

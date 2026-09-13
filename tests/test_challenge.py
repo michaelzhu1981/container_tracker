@@ -27,6 +27,35 @@ def test_datadome_sdk_script_is_not_a_challenge():
     assert challenge_code("https://js.datadome.co/tags.js") is None
 
 
+@pytest.mark.parametrize("html", [
+    '<div title=".hcaptcha.com">Provider: .hcaptcha.com</div>',
+    'Cookie provider: .hcaptcha.com; Google reCAPTCHA privacy policy',
+    '<script src="https://www.google.com/recaptcha/api.js"></script>',
+    '<script>const text = "verify you are human; captcha-delivery.com";</script>',
+    '<div hidden>Please complete the hCaptcha</div>',
+    '<div style="display:none"><iframe src="https://hcaptcha.com/challenge"></iframe></div>',
+    '<iframe src="https://www.google.com/recaptcha/api2/anchor?size=invisible"></iframe>',
+])
+def test_provider_disclosures_and_inactive_widgets_are_not_challenges(html):
+    assert challenge_code(html) is None
+
+
+@pytest.mark.parametrize("html", [
+    '<iframe src="https://geo.captcha-delivery.com/captcha/" title="DataDome CAPTCHA"></iframe>',
+    '<iframe src="https://newassets.hcaptcha.com/captcha/v1/?frame=challenge"></iframe>',
+    '<iframe src="https://www.google.com/recaptcha/api2/bframe"></iframe>',
+    'Please solve the CAPTCHA',
+])
+def test_active_captcha_still_detected(html):
+    assert challenge_code(html) == "CAPTCHA"
+
+
+def test_normal_result_with_cookie_provider_can_be_saved():
+    assert is_query_screenshot_page(
+        "Loaded on Vessel", '<div>Provider: .hcaptcha.com</div>'
+    )
+
+
 def test_akamai_access_denied_is_cloudflare():
     assert (
         challenge_code("Access Denied\nerrors.edgesuite.net\nReference #18.123")
@@ -133,7 +162,7 @@ class FakePage:
         self.gotos.append(url)
         self.url = url
 
-    async def wait_for_function(self, script, timeout=0):
+    async def wait_for_function(self, script, timeout=0, polling=None):
         self.calls += 1
         if self.succeed_on_call is not None and self.calls >= self.succeed_on_call:
             self.text = "Latest Event\nShipment details\nContainer No."
@@ -194,7 +223,7 @@ def test_auto_wait_false_success_still_hands_off(monkeypatch):
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
     page = FakePage(text="verify you are human")
 
-    async def pretend_gone(script, timeout=0):
+    async def pretend_gone(script, timeout=0, polling=None):
         page.calls += 1
         return True
 
@@ -231,6 +260,121 @@ def test_human_handoff_opens_system_chrome_instead_of_clicking_widget(monkeypatc
     assert browser.handed is True
     assert page.gotos == []
     assert challenge_code(page.text) is None
+
+
+@pytest.mark.parametrize("tracker_name", ["cma", "maersk"])
+def test_cmdu_maeu_keep_verification_in_same_window(monkeypatch, tracker_name):
+    from trackers.cma import CmaTracker
+    from trackers.maersk import MaerskTracker
+
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
+    page = FakePage(text="Please complete the CAPTCHA", succeed_on_call=2)
+    browser = _HandoffBrowser(page)
+    messages = []
+    browser.on_challenge = messages.append
+    cls = CmaTracker if tracker_name == "cma" else MaerskTracker
+    tracker = cls(page, wait_for_challenge=True, browser=browser)
+    assert asyncio.run(tracker.pass_or_wait_for_challenge()) is True
+    assert browser.handed is False
+    assert tracker.page is page
+    assert page.gotos == []
+    assert any(item["mode"] == "current_browser" for item in messages)
+    assert messages[-1]["code"] is None
+    page.text = "Please complete the CAPTCHA"
+    with pytest.raises(TrackerError) as exc:
+        asyncio.run(tracker.pass_or_wait_for_challenge())
+    assert exc.value.code == "CAPTCHA"
+    assert page.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_challenge_wait_responds_to_stop():
+    page = FakePage(text="Please complete the CAPTCHA")
+    waiting = asyncio.Event()
+    cancelled_wait = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        waiting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled_wait.set()
+
+    page.wait_for_function = blocked
+    browser = _HandoffBrowser(page)
+    browser.should_abort = stop.is_set
+    tracker = DummyTracker(page, browser=browser)
+    task = asyncio.create_task(tracker.pass_or_wait_for_challenge())
+    await waiting.wait()
+    stop.set()
+    with pytest.raises(TrackerError) as exc:
+        await asyncio.wait_for(task, timeout=1)
+    assert exc.value.code == "CANCELLED"
+    assert cancelled_wait.is_set()
+    assert browser.handed is False
+
+
+def test_unattended_captcha_does_not_reload_or_open_manual_window():
+    page = FakePage(text="Please complete the CAPTCHA")
+    browser = _HandoffBrowser(page)
+    tracker = DummyTracker(page, wait_for_challenge=False, browser=browser)
+    with pytest.raises(TrackerError) as exc:
+        asyncio.run(tracker.pass_or_wait_for_challenge())
+    assert exc.value.code == "CAPTCHA"
+    assert page.calls == 1
+    assert page.gotos == []
+    assert browser.handed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", ["page_replaced", "not_submitted", "empty_form", "results_present"])
+async def test_search_resumes_after_challenge_without_duplicate_queries(recovery):
+    class RecoveringTracker(DummyTracker):
+        def __init__(self):
+            super().__init__(FakePage(text="Search"))
+            self.searches = []
+            self.waits = 0
+            self.parses = 0
+
+        async def search(self, container):
+            self.searches.append(container)
+            self._search_submitted = recovery != "not_submitted" or len(self.searches) > 1
+
+        async def pass_or_wait_for_challenge(self):
+            self.waits += 1
+            if self.waits == 2:
+                if recovery == "page_replaced":
+                    self.page = FakePage(text="Search")
+                return True
+            return False
+
+        async def parse_events(self):
+            self.parses += 1
+            if recovery == "empty_form" and self.parses == 1:
+                raise TrackerError("No table after challenge", "PARSE")
+            return []
+
+        async def save_artifacts(self, *args, **kwargs):
+            pass
+
+    tracker = RecoveringTracker()
+    await tracker.track("ECMU7271573")
+    expected = 1 if recovery == "results_present" else 2
+    assert tracker.searches == ["ECMU7271573"] * expected
+
+
+def test_maersk_rebinds_response_listener_after_page_replacement():
+    from trackers.maersk import MaerskTracker
+
+    page = FakePage(text="Search")
+    tracker = MaerskTracker(page)
+    asyncio.run(tracker._bind_tracking_response())
+    replacement = FakePage(text="Search")
+    tracker.page = replacement
+    with pytest.raises(TrackerError):
+        asyncio.run(tracker.search("HASU4566923"))
+    assert replacement._ct_maersk_bound is True
 
 
 def test_human_wait_used_after_auto_fails(monkeypatch):

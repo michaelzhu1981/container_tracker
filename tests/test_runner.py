@@ -27,6 +27,12 @@ def test_circuit_trips_after_two_cloudflare_failures():
     assert (streak, tripped) == (2, True)
 
 
+def test_circuit_trips_after_repeated_captcha():
+    streak, tripped = update_circuit(0, "CAPTCHA")
+    assert (streak, tripped) == (1, False)
+    assert update_circuit(streak, "CAPTCHA") == (2, True)
+
+
 def test_circuit_trips_on_selector_and_resets_on_success():
     streak, tripped = update_circuit(0, "SELECTOR")
     assert tripped is False

@@ -179,6 +179,7 @@ class CarrierBrowser:
         self.headed = headed
         self.allow_stdin = allow_stdin
         self.should_abort = should_abort
+        self.on_challenge: Callable[[dict], None] | None = None
         self.context = None
         self.page = None
 
@@ -597,6 +598,13 @@ async def run_batch(
                     await session.ensure_open()
                     first = False
                     row = rows[idx]
+                    session.on_challenge = lambda challenge, index=idx: notify({
+                        "index": index,
+                        "total": total,
+                        "phase": "challenge" if challenge.get("code") else "querying",
+                        "challenge": challenge if challenge.get("code") else None,
+                        "result": None,
+                    })
                     notify(
                         {
                             "index": idx,

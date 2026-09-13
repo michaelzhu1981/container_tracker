@@ -12,8 +12,8 @@
 | `YMJA` | Yang Ming | 已实现；默认无头 |
 | `ONEY` | ONE | 已实现；默认无头 |
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
-| `MAEU` | Maersk | 已实现；与 HLCU 相同：复用 Tracking 页、表单查询、挑战交给系统 Chrome |
-| `CMDU` | CMA CGM | 已实现；与 HLCU 相同：复用 Tracking 页、表单查询、挑战交给系统 Chrome。还箱超过约 15 天可能无结果 |
+| `MAEU` | Maersk | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成 |
+| `CMDU` | CMA CGM | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成。还箱超过约 15 天可能无结果 |
 
 每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU 无头更容易被拦，因此这四家默认 headed。
 
@@ -48,12 +48,12 @@ python app.py --serve
 
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
-- **Wait for challenge**：自动等待失败后，把挑战交给本机 Chrome（默认开）。关掉则自动失败并可能熔断该家
+- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。CMDU / MAEU 保留当前窗口；HLCU / MSCU 交给普通系统 Chrome。关掉则自动失败并可能熔断该家
 - **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页没有终端。遇到 Cloudflare / DataDome 交接时：在弹出的普通 Google Chrome 里完成验证，等到出现搜索框后 **Cmd+Q**。程序用同一资料目录自动查箱号。
+网页会显示验证码等待状态和对应操作。CMDU / MAEU：在当前 Chrome 里完成验证并保持窗口打开，程序自动继续，等待中可点 Stop。HLCU / MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
 
 ## 命令行
 
@@ -109,16 +109,17 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
 
-同一家连续两箱都是 `CLOUDFLARE` 或 `SELECTOR` 时，停查该家剩余行，其他船公司继续。
+同一家连续两箱出现 `CLOUDFLARE` / `CAPTCHA` / `SELECTOR` 时，停查该家剩余行，其他船公司继续。
 
 ## Cloudflare / CAPTCHA
 
-1. 先短等非交互 JS 挑战自己消失
-2. 仍在挑战页：关掉自动窗口，用同一资料目录打开普通 Google Chrome（不开调试端口）
-3. 在那个窗口里完成验证，等到出现搜索框
-4. 关掉该 Chrome（Cmd+Q）；程序用同一资料目录自动填箱号查询
-5. 不要在自动窗口里点勾，那里经常点了也不过
-6. `--no-wait-challenge`：不等人，自动失败后记 `CLOUDFLARE`
+1. 只识别验证提示或可见验证 iframe；Cookie 说明里的 `.hcaptcha.com`、SDK 脚本和隐藏组件不算挑战。
+2. 先等最多 25 秒，让非交互 JS 挑战自行消失。
+3. CMDU / MAEU 仍有挑战时，保留当前 Chrome 窗口，最多等 180 秒人工完成；**不要退出 Chrome**。验证码消失后自动继续，必要时重新提交当前箱号一次；Stop 可取消等待。
+4. HLCU / MSCU 仍使用普通系统 Chrome 交接：完成验证、出现搜索框后退出该 Chrome，程序重新打开同一资料目录查询。
+5. 每箱最多进入一次人工验证流程；验证后再次被拦则记录失败。无人值守遇到 CAPTCHA 不反复刷新；连续两箱被拦会停止该家剩余查询。
+
+真实 CAPTCHA 仍需要人工完成；保留窗口不能保证站点放行。如果 CMDU 验证框显示“没有互联网接入”，应检查本机网络、代理 / VPN 或联系船公司支持。完全无人值守可使用 CMA CGM 官方 [Visibility API](https://api-portal.cma-cgm.com/products/visibility)，其公共接口也需要申请 API Key；本工具目前仍使用网页查询。
 
 HLCU / MSCU / MAEU / CMDU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。CMDU / MAEU 不再走 GET search 或箱号深链（更容易再次触发 DataDome / Akamai）。无人值守：
 

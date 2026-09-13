@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from challenges import CHALLENGE_CODE_JS
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -386,6 +387,7 @@ def parse_cma_html(html: str) -> list[CanonicalEvent]:
 
 class CmaTracker(BaseTracker):
     carrier_code = "CMDU"
+    wait_in_current_browser = True
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
@@ -439,6 +441,7 @@ class CmaTracker(BaseTracker):
         await self.dismiss_session_timeout()
 
     async def search(self, container: str) -> None:
+        self._search_submitted = False
         if await self._page_challenge_code():
             return
         await self.dismiss_cookies()
@@ -485,6 +488,7 @@ class CmaTracker(BaseTracker):
                 continue
         if not clicked:
             await field.press("Enter")
+        self._search_submitted = True
         await self._wait_for_results()
         await self.expand_result_details()
 
@@ -493,7 +497,6 @@ class CmaTracker(BaseTracker):
             await self.page.wait_for_function(
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
-                    const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
                     const err = document.querySelector("#trackingAlertError");
                     const errVisible = !!(err && getComputedStyle(err).display !== "none");
                     return (
@@ -503,10 +506,9 @@ class CmaTracker(BaseTracker):
                         text.includes("empty to shipper") ||
                         text.includes("ready to be loaded") ||
                         errVisible ||
-                        html.includes("captcha-delivery.com") ||
-                        html.includes("cf-challenge")
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
                 timeout=40_000,
             )
         except Exception:  # noqa: BLE001

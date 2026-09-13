@@ -72,6 +72,24 @@ def test_job_start_rejects_empty(tmp_path: Path):
         manager.request_stop()
 
 
+def test_challenge_progress_exposes_action_and_clears_on_resume(tmp_path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("ECMU7271573", "CMDU")])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    manager._on_progress({
+        "index": 0, "phase": "challenge",
+        "challenge": {"code": "CAPTCHA", "mode": "current_browser", "timeout_seconds": 180},
+    })
+    snap = manager.snapshot()
+    assert snap["rows"][0]["phase"] == "challenge"
+    assert snap["counts"]["QUERYING"] == 1
+    assert snap["counts"]["PENDING"] == 0
+    assert "keep it open" in snap["job"]["message"]
+    assert snap["job"]["challenge"]["code"] == "CAPTCHA"
+    manager._on_progress({"index": 0, "phase": "querying"})
+    assert manager.snapshot()["job"]["challenge"] is None
+
+
 def test_job_snapshot_merges_previous_results(tmp_path: Path):
     from excel_io import build_output_frame, write_output
 
