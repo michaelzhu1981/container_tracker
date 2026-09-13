@@ -178,7 +178,10 @@ class BaseTracker(ABC):
                 "() => (document.body && document.body.innerText) || ''"
             )
         except Exception:  # noqa: BLE001
-            return await self.page.content()
+            try:
+                return await self.page.content()
+            except Exception:  # noqa: BLE001
+                return ""
 
     def detect_blocks(self, html: str) -> None:
         code = challenge_code(html)
@@ -223,32 +226,39 @@ class BaseTracker(ABC):
             await self._after_challenge_cleared()
             return
 
+        if self.wait_for_challenge:
+            if self.browser is not None and hasattr(
+                self.browser, "hand_off_to_system_chrome"
+            ):
+                LOGGER.info("Handing %s off to system Chrome for a human check", code)
+                handed = await self.browser.hand_off_to_system_chrome(self.tracking_url)
+                if handed:
+                    self.page = self.browser.page
+                    if not challenge_code(await self._visible_text()):
+                        await self._after_challenge_cleared()
+                        return
+            else:
+                seconds = CHALLENGE_WAIT_MS // 1000
+                print(
+                    f"Security check ({code}) is blocking the page. "
+                    f"Complete it in the browser window; tracking resumes automatically "
+                    f"(timeout {seconds}s)."
+                )
+                LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
+                if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
+                    await self._after_challenge_cleared()
+                    return
+            still = challenge_code(await self._visible_text()) or code
+            raise TrackerError(
+                f"Timed out waiting for the {still} check to clear.",
+                still,
+            )
+
         for delay in CHALLENGE_RETRY_DELAYS:
             LOGGER.info("Retrying after %s: sleeping %.0fs then reloading", code, delay)
             await self.page.wait_for_timeout(int(delay * 1000))
             await self._reload_tracking_page()
             if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
-                await self._after_challenge_cleared()
-                return
-
-        code = challenge_code(await self._visible_text()) or code
-        if self.wait_for_challenge:
-            if self.browser is not None and hasattr(self.browser, "ensure_headed"):
-                switched = await self.browser.ensure_headed()
-                if switched:
-                    self.page = self.browser.page
-                    await self._reload_tracking_page()
-                    if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
-                        await self._after_challenge_cleared()
-                        return
-            seconds = CHALLENGE_WAIT_MS // 1000
-            print(
-                f"Security check ({code}) is blocking the page. "
-                f"Complete it in the browser window; tracking resumes automatically "
-                f"(timeout {seconds}s)."
-            )
-            LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
-            if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
                 await self._after_challenge_cleared()
                 return
 
@@ -288,7 +298,11 @@ class BaseTracker(ABC):
         try:
             html = await self.page.content()
             self._html.write_text(html, encoding="utf-8")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if "has been closed" in str(exc) or "TargetClosed" in type(exc).__name__:
+                LOGGER.info("Skipped artifacts for %s; browser already closed.", container)
+                self._html = None
+                return
             LOGGER.exception("HTML save failed for %s", container)
             self._html = None
             html = ""
@@ -322,7 +336,8 @@ class BaseTracker(ABC):
         stamp = checked_at()
         try:
             await self.open_page()
-            await self.dismiss_cookies()
+            if not challenge_code(await self._visible_text()):
+                await self.dismiss_cookies()
             await self.pass_or_wait_for_challenge()
             await self.search(container)
             await self.dismiss_cookies(wait_ms=8_000)
@@ -374,7 +389,9 @@ class BaseTracker(ABC):
             )
             status = "MANUAL_CHECK_REQUIRED" if exc.code in {"CAPTCHA"} else "CHECK_FAILED"
             if exc.code == "CLOUDFLARE":
-                status = "CHECK_FAILED"
+                status = (
+                    "MANUAL_CHECK_REQUIRED" if self.wait_for_challenge else "CHECK_FAILED"
+                )
             return evaluate(
                 [],
                 container=container,
@@ -405,7 +422,9 @@ class BaseTracker(ABC):
                     error=f"Timed out loading the tracking page: {exc}",
                 )
             LOGGER.exception("Tracker failed for %s %s", self.carrier_code, container)
-            await self.save_artifacts(container)
+            closed = "has been closed" in str(exc) or "TargetClosed" in type(exc).__name__
+            if not closed:
+                await self.save_artifacts(container)
             return evaluate(
                 [],
                 container=container,
@@ -415,6 +434,6 @@ class BaseTracker(ABC):
                 screenshot_path=relative_to_root(self._screenshot),
                 html_path=relative_to_root(self._html),
                 forced_status="CHECK_FAILED",
-                error_code="NAVIGATION",
+                error_code="NAVIGATION" if not closed else "CLOUDFLARE",
                 error=str(exc),
             )

@@ -41,10 +41,11 @@ python app.py input/containers.xlsx
 
 遇到 Cloudflare / CAPTCHA 时：
 
-1. 先短等非交互 JS 挑战自己消失（真实 Chrome 上常见）
-2. 失败则刷新页面再等，最多两次
-3. 仍停在挑战页，才弹出可见窗口等人点击（最多约 3 分钟）
-4. 点完后同一浏览器继续查后面的箱子，不会每箱重开
+1. 先短等非交互 JS 挑战自己消失
+2. 仍在挑战页：关掉自动窗口，用同一资料目录打开你平时的 Google Chrome
+3. 在那个窗口里完成验证，等到出现箱号搜索框，**关掉该 Chrome**，回到终端按 Enter
+4. 程序重新接上同一资料目录继续查。不要在自动窗口里点勾，那里经常点了也不过
+5. `--no-wait-challenge`：不等人，自动失败后记 `CLOUDFLARE`
 
 HLCU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。无人值守、自动失败后不要等人：
 

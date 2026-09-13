@@ -523,7 +523,7 @@ Output: output/containers_result.xlsx
 - Cookie Banner 用选择器自动关
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
 - 流程：打开 Tracking 页 → 自动等待 JS 挑战 → 关 Cookie → 输入箱号
-- CAPTCHA / Cloudflare：**先自动等、再刷新重试，用尽后才等人点**。不打码、不伪造 token。`--no-wait-challenge` 时自动失败后记 `CLOUDFLARE` / `CAPTCHA` 并熔断该家
+- CAPTCHA / Cloudflare：先在同一页短等 JS 挑战。仍在挑战页则**交给系统 Chrome**（同一 `user_data_dir`）：人点完、关掉窗口、终端按 Enter 后再接回。不要在 Playwright 窗口里点勾。`--no-wait-challenge` 才刷新重试或不等人。不打码、不伪造 token
 - `--headed` 强制所有船公司可见窗口。查询结果页才截图（结果区域，不含登录/cookie）；Cloudflare 页只留 HTML。失败仍保存 `page.content()`
 
 不能承诺 6 家 100% 自动。Hapag 等站点的非交互挑战应尽量自动过；需要点击时同一 Chrome 资料目录等人点一次，后续箱复用。连续两箱 `SELECTOR` / `CLOUDFLARE` 停查该家。

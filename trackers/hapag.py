@@ -281,6 +281,9 @@ class HapagTracker(BaseTracker):
                 await self.dismiss_onboarding()
                 return
         await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        landing = await self._visible_text()
+        if challenge_code(landing):
+            return
         await self.dismiss_cookies(wait_ms=8_000)
         html = await self.page.content()
         lowered = html.lower()

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 
@@ -75,6 +77,69 @@ class CarrierBrowser:
         LOGGER.info("Opening a visible Chrome window for %s using the same profile.", self.carrier)
         self.headed = True
         await self.start()
+        return True
+
+    def page_open(self) -> bool:
+        try:
+            return self.page is not None and not self.page.is_closed()
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def ensure_open(self) -> None:
+        if self.page_open():
+            return
+        LOGGER.info("Relaunching %s browser after the window closed.", self.carrier)
+        await self.start()
+
+    def _spawn_system_chrome(self, url: str) -> None:
+        profile = str(chrome_profile_dir(self.carrier).resolve())
+        subprocess.Popen(
+            [
+                "open",
+                "-na",
+                "Google Chrome",
+                "--args",
+                f"--user-data-dir={profile}",
+                "--new-window",
+                url,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    async def hand_off_to_system_chrome(self, url: str) -> bool:
+        """Let the user pass Cloudflare in real Chrome, then reopen this profile."""
+        print()
+        print("Automated Chrome cannot complete this check reliably.")
+        print("1. The automated window will close.")
+        print("2. Google Chrome will open the tracking page with the same profile.")
+        print("3. Complete the check and wait until the container search box is visible.")
+        print("4. Close that Chrome window (so the profile is not locked).")
+        print("5. Return here and press Enter to resume tracking.")
+        print()
+        await self.close()
+        await asyncio.sleep(1.2)
+        try:
+            self._spawn_system_chrome(url)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.info("Could not open system Chrome: %s", exc)
+            await self.start()
+            return False
+        await asyncio.to_thread(
+            input,
+            "Press Enter after the search box is visible and you have closed Chrome...",
+        )
+        try:
+            await self.start()
+        except Exception:  # noqa: BLE001
+            print("Could not reopen the profile. Close Google Chrome, then press Enter again.")
+            await asyncio.to_thread(input, "Press Enter...")
+            await self.start()
+        if url and self.page is not None:
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded")
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Could not open %s after manual Chrome unlock.", url)
         return True
 
     async def close(self) -> None:
@@ -335,9 +400,14 @@ async def run_batch(
                     written = write_output(written, build_output_frame(rows, results))
                     continue
                 if not first:
-                    await session.page.wait_for_timeout(
-                        int(random.uniform(*query_delay_seconds(carrier)) * 1000)
-                    )
+                    try:
+                        if session.page_open():
+                            await session.page.wait_for_timeout(
+                                int(random.uniform(*query_delay_seconds(carrier)) * 1000)
+                            )
+                    except Exception:  # noqa: BLE001
+                        LOGGER.info("Delay before %s skipped; browser was closed.", carrier)
+                await session.ensure_open()
                 first = False
                 row = rows[idx]
                 if not container_shape_ok(row["Container"]) or not carrier_supported(

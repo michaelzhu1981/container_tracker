@@ -130,14 +130,38 @@ def test_auto_retry_reloads_then_clears(monkeypatch):
     assert challenge_code(page.text) is None
 
 
+class _HandoffBrowser:
+    def __init__(self, page: FakePage) -> None:
+        self.page = page
+        self.handed = False
+
+    async def hand_off_to_system_chrome(self, url: str) -> bool:
+        self.handed = True
+        assert url
+        self.page.text = "Latest Event\nSearch\nContainer No."
+        return True
+
+
+def test_human_handoff_opens_system_chrome_instead_of_clicking_widget(monkeypatch):
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
+    page = FakePage(text="verify you are human")
+    browser = _HandoffBrowser(page)
+    tracker = DummyTracker(page, wait_for_challenge=True, browser=browser)
+    asyncio.run(tracker.pass_or_wait_for_challenge())
+    assert browser.handed is True
+    assert page.gotos == []
+    assert challenge_code(page.text) is None
+
+
 def test_human_wait_used_after_auto_fails(monkeypatch):
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
-    monkeypatch.setattr("trackers.base.CHALLENGE_RETRY_DELAYS", ())
+    monkeypatch.setattr("trackers.base.CHALLENGE_RETRY_DELAYS", (0.0, 0.0))
     monkeypatch.setattr("trackers.base.CHALLENGE_WAIT_MS", 5_000)
     page = FakePage(text="verify you are human", succeed_on_call=2)
     tracker = DummyTracker(page, wait_for_challenge=True)
     asyncio.run(tracker.pass_or_wait_for_challenge())
     assert page.calls == 2
+    assert page.gotos == []
     assert challenge_code(page.text) is None
 
 
