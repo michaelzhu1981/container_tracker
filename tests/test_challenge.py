@@ -7,6 +7,7 @@ from trackers.base import (
     TrackerError,
     challenge_code,
     is_query_screenshot_page,
+    looks_like_no_result,
 )
 
 
@@ -24,6 +25,17 @@ def test_captcha_visible_text():
 def test_normal_tracking_page_is_not_a_challenge():
     assert challenge_code("Cargo Tracking\nSearch\nContainer No.") is None
     assert challenge_code("Cookie Policy and Cloudflare CDN mention") is None
+
+
+def test_one_i18n_bundle_is_not_treated_as_no_result():
+    visible = (
+        "Total 1 result\n"
+        "Loaded on Vessel at Port of Loading\n"
+        "Vessel Departure from Port of Loading"
+    )
+    assert not looks_like_no_result(visible)
+    assert looks_like_no_result("No Results Found\nPlease modify your search.")
+    assert looks_like_no_result("Can't identify your input")
 
 
 def test_query_screenshot_keeps_tracking_results_only():

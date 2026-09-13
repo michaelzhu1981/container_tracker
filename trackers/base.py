@@ -61,6 +61,16 @@ _HIDE_OVERLAYS_JS = """() => {
 
 _NO_SCREENSHOT_CODES = frozenset({"CLOUDFLARE", "CAPTCHA"})
 
+_NO_RESULT_TOKENS = (
+    "no result",
+    "not found",
+    "no tracing",
+    "no tracking information",
+    "can't identify your input",
+    "cannot identify your input",
+    "can’t identify your input",
+)
+
 _QUERY_PAGE_MARKERS = (
     "hal-event",
     "latest event",
@@ -97,6 +107,16 @@ def is_query_screenshot_page(text: str, html: str = "") -> bool:
     if cookie_only or login_only:
         return False
     return any(marker in blob for marker in _QUERY_PAGE_MARKERS)
+
+
+def looks_like_no_result(text: str) -> bool:
+    """True when visible page text says the container was not found.
+
+    Do not pass raw HTML: ONE and other sites embed i18n strings such as
+    "No Results Found" and "Page Not Found" in the document even on hits.
+    """
+    blob = text.lower()
+    return any(token in blob for token in _NO_RESULT_TOKENS)
 
 
 _CHALLENGE_GONE_JS = """() => {
@@ -354,20 +374,7 @@ class BaseTracker(ABC):
             await self.dismiss_cookies(wait_ms=8_000)
             await self.page.wait_for_timeout(1500)
             await self.pass_or_wait_for_challenge()
-            html = await self.page.content()
-            blob = html.lower()
-            if any(
-                token in blob
-                for token in (
-                    "no result",
-                    "not found",
-                    "no tracing",
-                    "no tracking information",
-                    "can't identify your input",
-                    "cannot identify your input",
-                    "can’t identify your input",
-                )
-            ):
+            if looks_like_no_result(await self._visible_text()):
                 raise TrackerError("No tracking result for this container.", "NO_RESULT")
             events = await self.parse_events()
             await self.save_artifacts(container)
