@@ -4,6 +4,7 @@ import pytest
 
 from config import chrome_profile_dir, default_headed_for, query_delay_seconds
 from runner import (
+    carrier_schedule_waves,
     chrome_commands_using_profile,
     chrome_launch_args,
     playwright_context_kwargs,
@@ -237,8 +238,8 @@ async def test_run_batch_stops_remaining_on_cancel(tmp_path: Path, monkeypatch):
         cancel_event=cancel,
         wait_for_challenge=False,
     )
-    assert tracked == ["HLXU1234567"]
-    assert [item.container for item in results] == ["HLXU1234567"]
+    assert tracked == ["YMLU1234567", "HLXU1234567"]
+    assert [item.container for item in results] == ["HLXU1234567", "YMLU1234567"]
     assert written.exists()
 
 
@@ -279,8 +280,20 @@ def _fake_playwright_browser(monkeypatch):
     monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
 
 
+def test_carrier_schedule_waves_headless_then_headed():
+    assert carrier_schedule_waves(["CMDU", "ONEY", "HLCU", "YMJA", "MSCU", "MAEU"]) == [
+        ["ONEY", "YMJA"],
+        ["MSCU"],
+        ["MAEU"],
+        ["HLCU"],
+        ["CMDU"],
+    ]
+    assert carrier_schedule_waves(["HLCU", "CMDU"]) == [["HLCU"], ["CMDU"]]
+    assert carrier_schedule_waves(["ONEY"]) == [["ONEY"]]
+
+
 @pytest.mark.asyncio
-async def test_run_batch_limits_parallel_carriers_to_three(
+async def test_run_batch_runs_headless_together_then_headed_serial(
     tmp_path: Path, monkeypatch
 ):
     import asyncio
@@ -291,7 +304,8 @@ async def test_run_batch_limits_parallel_carriers_to_three(
     active: set[str] = set()
     started: list[str] = []
     max_active = 0
-    three_started = asyncio.Event()
+    snapshots: list[frozenset[str]] = []
+    headless_ready = asyncio.Event()
     release = asyncio.Event()
 
     async def fake_track(page, carrier, container, **kwargs):
@@ -299,8 +313,9 @@ async def test_run_batch_limits_parallel_carriers_to_three(
         active.add(carrier)
         started.append(carrier)
         max_active = max(max_active, len(active))
-        if len(active) == 3:
-            three_started.set()
+        snapshots.append(frozenset(active))
+        if {"ONEY", "YMJA"} <= set(started) and not headless_ready.is_set():
+            headless_ready.set()
         await release.wait()
         active.remove(carrier)
         return TrackResult(
@@ -315,23 +330,28 @@ async def test_run_batch_limits_parallel_carriers_to_three(
     monkeypatch.setattr("runner._track_one", fake_track)
     _fake_playwright_browser(monkeypatch)
     rows = [
+        {"Container": "CMAU1234567", "Carrier": "CMDU", "extras": {}},
+        {"Container": "MSCU1234567", "Carrier": "MSCU", "extras": {}},
+        {"Container": "MSKU1234567", "Carrier": "MAEU", "extras": {}},
         {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
         {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
         {"Container": "ONEU1234567", "Carrier": "ONEY", "extras": {}},
-        {"Container": "MSKU1234567", "Carrier": "MAEU", "extras": {}},
     ]
 
     task = asyncio.create_task(
         run_batch(rows, output_path=tmp_path / "out.xlsx")
     )
-    await asyncio.wait_for(three_started.wait(), timeout=2)
+    await asyncio.wait_for(headless_ready.wait(), timeout=2)
     await asyncio.sleep(0)
-    assert len(started) == 3
-    assert max_active == 3
+    assert set(started) == {"ONEY", "YMJA"}
+    assert max_active == 2
     release.set()
     results, _written = await asyncio.wait_for(task, timeout=2)
-    assert len(results) == 4
-    assert set(started) == {"HLCU", "YMJA", "ONEY", "MAEU"}
+    assert len(results) == 6
+    assert set(started[:2]) == {"ONEY", "YMJA"}
+    assert started[2:] == ["MSCU", "MAEU", "HLCU", "CMDU"]
+    headed_snaps = [snap for snap in snapshots if snap & {"MSCU", "MAEU", "HLCU", "CMDU"}]
+    assert all(len(snap) == 1 for snap in headed_snaps)
 
 
 @pytest.mark.asyncio
