@@ -544,9 +544,20 @@
       messageEl.textContent = job.message || "";
       pathsEl.textContent = `Input ${job.input || "—"} · Output ${job.output || "—"} · ${done}/${total}`;
 
-      if (data.carriers && data.carriers.length && !chipsEl.childElementCount) {
-        knownCarriers = data.carriers;
-        renderChips(data.carriers, false);
+      if (data.carriers && data.carriers.length) {
+        const incoming = data.carriers;
+        const unchanged =
+          incoming.length === knownCarriers.length &&
+          incoming.every((code, index) => code === knownCarriers[index]);
+        if (!unchanged) {
+          const prevOn = [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
+          const keepSelection =
+            chipsEl.childElementCount > 0 &&
+            prevOn.length > 0 &&
+            prevOn.length < knownCarriers.length;
+          knownCarriers = incoming;
+          renderChips(incoming, keepSelection);
+        }
       }
 
       countsEl.innerHTML = [

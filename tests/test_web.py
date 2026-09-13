@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from config import SUPPORTED_CARRIERS
 from job import JobManager
 from web import create_app
 
@@ -29,6 +30,7 @@ def test_status_page_and_stop_when_idle(tmp_path: Path):
         assert ">Time<" in page.text
         status = client.get("/api/status")
         assert status.status_code == 200
+        assert status.json()["carriers"] == list(SUPPORTED_CARRIERS)
         assert status.json()["rows"][0]["container"] == "HLXU1234567"
         assert status.json()["carrier_times"] == {}
         stopped = client.post("/api/stop")
