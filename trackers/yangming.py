@@ -56,7 +56,8 @@ def _voyage_and_vessel(mode_text: str) -> tuple[str | None, str | None]:
     vessel = mode_text
     if match:
         vessel = (mode_text[: match.start()] + mode_text[match.end() :]).strip(" /-")
-    vessel = " ".join(vessel.split()) or None
+    vessel = re.sub(r"\(\s*\)", "", vessel)
+    vessel = " ".join(vessel.split()).strip(" -/") or None
     return vessel, voyage
 
 
@@ -127,7 +128,7 @@ def parse_yangming_html(html: str) -> list[CanonicalEvent]:
 
 class YangMingTracker(BaseTracker):
     carrier_code = "YMJA"
-    timeline_order = "oldest_first"
+    timeline_order = "newest_first"
     tracking_url = TRACK_URL
 
     async def open_page(self) -> None:

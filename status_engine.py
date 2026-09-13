@@ -140,6 +140,10 @@ def select_latest_journey(
         return []
     act = [e for e in events if e.classifier == "ACT"]
     pool = act or events
+    if any(is_empty_return(e) for e in pool):
+        pool = _apply_empty_return_split(pool, timeline_order)
+        if not pool:
+            return []
 
     grouped = _group_latest(
         pool, lambda e: (e.booking or "").strip().upper() or None, timeline_order
@@ -212,6 +216,10 @@ def evaluate(
     if not journey:
         result.loaded = False
         result.sailed = False
+        empty_returns = [e for e in events if e.classifier == "ACT" and is_empty_return(e)]
+        last_return = _latest(empty_returns, timeline_order)
+        if last_return:
+            result.latest_event = _latest_event_text(last_return)
         return _finalize(result, "NOT_LOADED", None, None)
 
     ocean = [e for e in journey if is_laden_ocean(e)]

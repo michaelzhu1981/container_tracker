@@ -200,6 +200,50 @@ def test_reuse_gap_keeps_latest_cycle():
     assert result.pol == "YANTIAN"
 
 
+def test_empty_return_splits_before_voyage_grouping():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="SHANGHAI",
+            event_date="2026-07-05",
+            event_time="10:30",
+            sequence_index=3,
+            vessel="YM UNIFORM",
+            voyage="249E",
+            raw_text="On Board SHANGHAI YM UNIFORM 249E",
+        ),
+        ev(
+            type="DISC",
+            location_raw="LOS ANGELES",
+            event_date="2026-07-22",
+            event_time="16:02",
+            sequence_index=2,
+            transport_mode="UNKNOWN",
+            raw_text="Discharged LOS ANGELES",
+        ),
+        ev(
+            type="GTIN",
+            location_raw="LOS ANGELES",
+            event_date="2026-08-06",
+            event_time="09:03",
+            sequence_index=0,
+            empty=True,
+            transport_mode="UNKNOWN",
+            raw_text="Empty Returned LOS ANGELES",
+        ),
+    ]
+    result = evaluate(
+        events,
+        container="YMMU6826189",
+        carrier="YMJA",
+        timeline_order="newest_first",
+        checked_at="2026-09-13 00:00:00",
+    )
+    assert result.status == "NOT_LOADED"
+    assert result.loaded is False
+    assert result.sailed is False
+
+
 def test_empty_return_starts_new_cycle():
     events = [
         ev(

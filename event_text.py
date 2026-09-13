@@ -35,9 +35,12 @@ _ESTIMATED = ("estimated", "estimate", "eta", "etd")
 _DATE_PATTERNS = [
     ("%Y-%m-%d %H:%M:%S", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\b")),
     ("%Y-%m-%d %H:%M", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})\b")),
+    ("%Y/%m/%d %H:%M:%S", re.compile(r"\b(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\b")),
+    ("%Y/%m/%d %H:%M", re.compile(r"\b(\d{4}/\d{2}/\d{2} \d{2}:\d{2})\b")),
     ("%d-%b-%Y %H:%M", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2})\b")),
     ("%d/%m/%Y %H:%M", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4} \d{2}:\d{2})\b")),
     ("%Y-%m-%d", re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")),
+    ("%Y/%m/%d", re.compile(r"\b(\d{4}/\d{2}/\d{2})\b")),
     ("%d-%b-%Y", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4})\b")),
     ("%d/%m/%Y", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")),
     ("%d.%m.%Y", re.compile(r"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")),

@@ -30,6 +30,16 @@ from validate import carrier_supported, container_shape_ok, iso6346_check_digit_
 LOGGER = logging.getLogger("container_tracker")
 
 
+async def _launch_browser(playwright, *, headed: bool):
+    """Prefer installed Chrome; Playwright Chromium is often challenged."""
+    kwargs = {"headless": not headed}
+    try:
+        return await playwright.chromium.launch(channel="chrome", **kwargs)
+    except Exception:  # noqa: BLE001
+        LOGGER.info("System Chrome not available; using Playwright Chromium.")
+        return await playwright.chromium.launch(**kwargs)
+
+
 def configure_logging() -> Path:
     path = log_path()
     handler = logging.FileHandler(path, encoding="utf-8")
@@ -170,7 +180,7 @@ async def run_single(
             {"Container": container, "Carrier": carrier}, checked_at()
         )
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=not headed)
+        browser = await _launch_browser(playwright, headed=headed)
         context_kwargs = {"locale": LOCALE}
         session = session_path(carrier)
         if session.exists():
@@ -222,7 +232,6 @@ async def run_batch(
     written = write_output(output_path, build_output_frame(rows, results))
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=not headed)
         by_carrier: dict[str, list[int]] = defaultdict(list)
         for idx, row in enumerate(rows):
             by_carrier[row["Carrier"]].append(idx)
@@ -234,20 +243,37 @@ async def run_batch(
                     results[idx] = _invalid_result(rows[idx], checked_at())
                 written = write_output(written, build_output_frame(rows, results))
                 continue
+            browser = await _launch_browser(playwright, headed=headed)
             context_kwargs = {"locale": LOCALE}
             session = session_path(carrier)
             if session.exists():
                 context_kwargs["storage_state"] = str(session)
             context = await browser.new_context(
-            viewport={"width": 1400, "height": 900},
-            **context_kwargs,
-        )
+                viewport={"width": 1400, "height": 900},
+                **context_kwargs,
+            )
             context.set_default_timeout(CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS))
             page = await context.new_page()
-            for idx in indices:
+            isolate = carrier == "HLCU"
+            for pos, idx in enumerate(indices):
                 if idx in skip_indices:
                     print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
                     continue
+                if isolate and pos > 0:
+                    await context.close()
+                    await browser.close()
+                    browser = await _launch_browser(playwright, headed=headed)
+                    context_kwargs = {"locale": LOCALE}
+                    if session.exists():
+                        context_kwargs["storage_state"] = str(session)
+                    context = await browser.new_context(
+                        viewport={"width": 1400, "height": 900},
+                        **context_kwargs,
+                    )
+                    context.set_default_timeout(
+                        CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS)
+                    )
+                    page = await context.new_page()
                 if not first:
                     await page.wait_for_timeout(
                         int(random.uniform(*QUERY_DELAY_SECONDS) * 1000)
@@ -267,10 +293,11 @@ async def run_batch(
                     )
                 print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
                 written = write_output(written, build_output_frame(rows, results))
-            session.parent.mkdir(parents=True, exist_ok=True)
-            await context.storage_state(path=str(session))
+                if results[idx] and results[idx].success:
+                    session.parent.mkdir(parents=True, exist_ok=True)
+                    await context.storage_state(path=str(session))
             await context.close()
-        await browser.close()
+            await browser.close()
 
     finalized = [item for item in results if item is not None]
     return finalized, written

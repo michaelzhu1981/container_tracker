@@ -23,6 +23,46 @@ def test_parse_sailed_fixture():
     assert result.vessel == "MONTEVIDEO EXPRESS"
 
 
+def test_parse_beta_transship_loaded_fixture():
+    html = (FIXTURES / "beta_transship_loaded.html").read_text(encoding="utf-8")
+    events = parse_hapag_html(html)
+    assert len(events) >= 8
+    actual_loads = [e for e in events if e.classifier == "ACT" and e.type == "LOAD"]
+    assert actual_loads[-1].location_raw == "SALALAH"
+    assert actual_loads[-1].event_time == "03:06"
+    assert actual_loads[-1].vessel == "BREMEN EXPRESS"
+    planned_depa = [e for e in events if e.classifier == "PLN" and e.type == "DEPA"]
+    assert planned_depa
+    result = evaluate(
+        events,
+        container="CAIU7012411",
+        carrier="HLCU",
+        timeline_order="oldest_first",
+        checked_at="2026-09-13 00:00:00",
+    )
+    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.pol == "SALALAH"
+    assert result.vessel == "BREMEN EXPRESS"
+    assert result.voyage == "6135"
+    assert result.load_time == "2026-09-07 03:06"
+    assert result.sailed is False
+
+
+def test_parse_beta_not_loaded_planned_ocean():
+    html = (FIXTURES / "beta_not_loaded.html").read_text(encoding="utf-8")
+    events = parse_hapag_html(html)
+    result = evaluate(
+        events,
+        container="TXGU7127206",
+        carrier="HLCU",
+        timeline_order="oldest_first",
+        checked_at="2026-09-13 00:00:00",
+    )
+    assert result.status == "NOT_LOADED"
+    assert result.sailed is False
+    assert any(e.classifier == "PLN" and e.type == "LOAD" for e in events)
+
+
 def test_parse_barge_only_fixture():
     html = (FIXTURES / "barge_only.html").read_text(encoding="utf-8")
     events = parse_hapag_html(html)
