@@ -210,6 +210,8 @@
     .dash tbody tr { cursor: pointer; }
     .dash tbody tr.active td { background: var(--accent-soft); }
     .dash .zero { color: var(--muted); }
+    .dash .pct-row { display: inline-flex; align-items: center; gap: 8px; }
+    .dash .pct { min-width: 3ch; color: var(--muted); }
     .dash .mini { display: block; height: 3px; width: 72px; background: var(--line); }
     .dash .mini > i { display: block; height: 100%; background: var(--accent); }
   </style>
@@ -419,7 +421,7 @@
           ${countCell(item.NOT_LOADED)}
           ${countCell(item.MANUAL_CHECK_REQUIRED)}
           ${countCell(item.CHECK_FAILED)}
-          <td class="bar"><span class="mini"><i style="width:${pct}%"></i></span></td>
+          <td class="bar"><span class="pct-row"><span class="pct">${pct}%</span><span class="mini"><i style="width:${pct}%"></i></span></span></td>
         </tr>`;
       }).join("");
     }
