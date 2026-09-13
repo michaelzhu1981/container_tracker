@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from artifacts import log_path, relative_to_root
@@ -65,10 +66,13 @@ def wait_for_system_chrome_closed(
     timeout_s: float = MANUAL_CHROME_WAIT_SECONDS,
     appear_s: float = MANUAL_CHROME_APPEAR_SECONDS,
     poll_s: float = 1.0,
+    should_abort: Callable[[], bool] | None = None,
 ) -> bool:
     """True after a Chrome using this profile appears and then exits."""
     appear_deadline = time.monotonic() + appear_s
     while time.monotonic() < appear_deadline:
+        if should_abort and should_abort():
+            return False
         if chrome_commands_using_profile(profile):
             break
         time.sleep(poll_s)
@@ -77,21 +81,31 @@ def wait_for_system_chrome_closed(
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if should_abort and should_abort():
+            return False
         if not chrome_commands_using_profile(profile):
             time.sleep(min(0.8, poll_s))
+            if should_abort and should_abort():
+                return False
             if not chrome_commands_using_profile(profile):
                 return True
         time.sleep(poll_s)
     return False
 
 
-def wait_for_human_after_chrome_handoff(profile: str, *, reopen: bool = False) -> bool:
+def wait_for_human_after_chrome_handoff(
+    profile: str,
+    *,
+    reopen: bool = False,
+    allow_stdin: bool = True,
+    should_abort: Callable[[], bool] | None = None,
+) -> bool:
     prompt = (
         "Press Enter..."
         if reopen
         else "Press Enter after the search box is visible and you have closed Chrome..."
     )
-    if stdin_can_accept_enter():
+    if allow_stdin and stdin_can_accept_enter():
         try:
             input(prompt)
             return True
@@ -99,19 +113,47 @@ def wait_for_human_after_chrome_handoff(profile: str, *, reopen: bool = False) -
             print("No terminal input. Waiting for you to close Google Chrome...")
     else:
         print("No terminal input. Complete the check in Google Chrome, then close that window.")
-    if wait_for_system_chrome_closed(profile):
+    if wait_for_system_chrome_closed(profile, should_abort=should_abort):
         return True
     print("Timed out waiting for the system Chrome window to close.")
     return False
 
 
+async def sleep_or_cancel(
+    seconds: float, cancel_event: asyncio.Event | None
+) -> bool:
+    """Sleep. Return True if cancel_event was set first."""
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if seconds <= 0:
+        return False
+    if cancel_event is None:
+        await asyncio.sleep(seconds)
+        return False
+    try:
+        await asyncio.wait_for(cancel_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
 class CarrierBrowser:
     """One persistent Chrome profile per carrier; never relaunched per box."""
 
-    def __init__(self, playwright, carrier: str, *, headed: bool) -> None:
+    def __init__(
+        self,
+        playwright,
+        carrier: str,
+        *,
+        headed: bool,
+        allow_stdin: bool = True,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> None:
         self.playwright = playwright
         self.carrier = carrier
         self.headed = headed
+        self.allow_stdin = allow_stdin
+        self.should_abort = should_abort
         self.context = None
         self.page = None
 
@@ -196,7 +238,12 @@ class CarrierBrowser:
             await self.start()
             return False
         profile = str(chrome_profile_dir(self.carrier).resolve())
-        if not await asyncio.to_thread(wait_for_human_after_chrome_handoff, profile):
+        if not await asyncio.to_thread(
+            wait_for_human_after_chrome_handoff,
+            profile,
+            allow_stdin=self.allow_stdin,
+            should_abort=self.should_abort,
+        ):
             try:
                 await self.start()
             except Exception:  # noqa: BLE001
@@ -207,7 +254,11 @@ class CarrierBrowser:
         except Exception:  # noqa: BLE001
             print("Could not reopen the profile. Close Google Chrome, then press Enter again.")
             if not await asyncio.to_thread(
-                wait_for_human_after_chrome_handoff, profile, reopen=True
+                wait_for_human_after_chrome_handoff,
+                profile,
+                reopen=True,
+                allow_stdin=self.allow_stdin,
+                should_abort=self.should_abort,
             ):
                 return False
             await self.start()
@@ -338,7 +389,7 @@ def _invalid_result(row: dict, checked_at: str) -> TrackResult:
     raise AssertionError("row is valid")
 
 
-def _cells_to_result(container: str, carrier: str, cells: dict) -> TrackResult:
+def cells_to_result(container: str, carrier: str, cells: dict) -> TrackResult:
     loaded = cells.get("Loaded")
     sailed = cells.get("Sailed")
     loaded_b = True if loaded == "YES" else False if loaded == "NO" else None
@@ -416,6 +467,10 @@ async def run_single(
     return result
 
 
+def _cancelled(cancel_event: asyncio.Event | None) -> bool:
+    return cancel_event is not None and cancel_event.is_set()
+
+
 async def run_batch(
     rows: list[dict],
     *,
@@ -424,13 +479,21 @@ async def run_batch(
     resume: bool = False,
     output_path: Path = OUTPUT_XLSX,
     previous_path: Path | None = None,
+    cancel_event: asyncio.Event | None = None,
+    on_progress: Callable[[dict], None] | None = None,
+    allow_stdin: bool = True,
 ) -> tuple[list[TrackResult], Path]:
     from artifacts import checked_at
     from playwright.async_api import async_playwright
 
+    def notify(payload: dict) -> None:
+        if on_progress:
+            on_progress(payload)
+
     previous = load_previous_results(previous_path or output_path) if resume else {}
     results: list[TrackResult | None] = [None] * len(rows)
     occurrence: dict[tuple[str, str], int] = {}
+    total = len(rows)
 
     skip_indices: set[int] = set()
     if resume:
@@ -440,7 +503,7 @@ async def run_batch(
             occurrence[key] = seen + 1
             cells = previous.get((row["Container"], row["Carrier"], seen))
             if cells and cells.get("Status") == "SAILED":
-                results[idx] = _cells_to_result(row["Container"], row["Carrier"], cells)
+                results[idx] = cells_to_result(row["Container"], row["Carrier"], cells)
                 skip_indices.add(idx)
         occurrence = {}
 
@@ -452,63 +515,117 @@ async def run_batch(
             by_carrier[row["Carrier"]].append(idx)
 
         first = True
+        cancelled = False
         for carrier, indices in by_carrier.items():
+            if cancelled or _cancelled(cancel_event):
+                cancelled = True
+                break
             if not carrier_supported(carrier):
                 for idx in indices:
                     results[idx] = _invalid_result(rows[idx], checked_at())
+                    notify(
+                        {
+                            "index": idx,
+                            "total": total,
+                            "phase": "done",
+                            "result": results[idx],
+                        }
+                    )
                 written = write_output(written, build_output_frame(rows, results))
                 continue
             session = CarrierBrowser(
-                playwright, carrier, headed=default_headed_for(carrier, headed)
+                playwright,
+                carrier,
+                headed=default_headed_for(carrier, headed),
+                allow_stdin=allow_stdin,
+                should_abort=lambda: _cancelled(cancel_event),
             )
             await session.start()
             streak = 0
             paused_code: str | None = None
-            for idx in indices:
-                if idx in skip_indices:
-                    print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
-                    continue
-                if paused_code:
-                    results[idx] = _paused_result(rows[idx], checked_at(), paused_code)
-                    print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
+            try:
+                for idx in indices:
+                    if _cancelled(cancel_event):
+                        cancelled = True
+                        break
+                    if idx in skip_indices:
+                        print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
+                        notify(
+                            {
+                                "index": idx,
+                                "total": total,
+                                "phase": "done",
+                                "result": results[idx],
+                            }
+                        )
+                        continue
+                    if paused_code:
+                        results[idx] = _paused_result(rows[idx], checked_at(), paused_code)
+                        print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
+                        notify(
+                            {
+                                "index": idx,
+                                "total": total,
+                                "phase": "done",
+                                "result": results[idx],
+                            }
+                        )
+                        written = write_output(written, build_output_frame(rows, results))
+                        continue
+                    if not first:
+                        delay = random.uniform(*query_delay_seconds(carrier))
+                        if await sleep_or_cancel(delay, cancel_event):
+                            cancelled = True
+                            break
+                    await session.ensure_open()
+                    first = False
+                    row = rows[idx]
+                    notify(
+                        {
+                            "index": idx,
+                            "total": total,
+                            "phase": "querying",
+                            "result": None,
+                        }
+                    )
+                    if not container_shape_ok(row["Container"]) or not carrier_supported(
+                        row["Carrier"]
+                    ):
+                        results[idx] = _invalid_result(row, checked_at())
+                    else:
+                        results[idx] = await _track_one(
+                            session.page,
+                            carrier,
+                            row["Container"],
+                            wait_for_challenge=wait_for_challenge,
+                            browser=session,
+                        )
+                    print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
+                    notify(
+                        {
+                            "index": idx,
+                            "total": total,
+                            "phase": "done",
+                            "result": results[idx],
+                        }
+                    )
                     written = write_output(written, build_output_frame(rows, results))
-                    continue
-                if not first:
-                    try:
-                        if session.page_open():
-                            await session.page.wait_for_timeout(
-                                int(random.uniform(*query_delay_seconds(carrier)) * 1000)
-                            )
-                    except Exception:  # noqa: BLE001
-                        LOGGER.info("Delay before %s skipped; browser was closed.", carrier)
-                await session.ensure_open()
-                first = False
-                row = rows[idx]
-                if not container_shape_ok(row["Container"]) or not carrier_supported(
-                    row["Carrier"]
-                ):
-                    results[idx] = _invalid_result(row, checked_at())
-                else:
-                    results[idx] = await _track_one(
-                        session.page,
-                        carrier,
-                        row["Container"],
-                        wait_for_challenge=wait_for_challenge,
-                        browser=session,
+                    streak, tripped = update_circuit(
+                        streak, results[idx].error_code if results[idx] else None
                     )
-                print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
-                written = write_output(written, build_output_frame(rows, results))
-                streak, tripped = update_circuit(
-                    streak, results[idx].error_code if results[idx] else None
-                )
-                if tripped:
-                    paused_code = results[idx].error_code if results[idx] else "CLOUDFLARE"
-                    LOGGER.info(
-                        "Pausing remaining %s rows after repeated %s",
-                        carrier,
-                        paused_code,
-                    )
-            await session.close()
+                    if tripped:
+                        paused_code = results[idx].error_code if results[idx] else "CLOUDFLARE"
+                        LOGGER.info(
+                            "Pausing remaining %s rows after repeated %s",
+                            carrier,
+                            paused_code,
+                        )
+            finally:
+                await session.close()
+
+    if cancelled:
+        print("Stopped. Remaining rows were not queried.")
+        notify({"index": None, "total": total, "phase": "cancelled", "result": None})
 
     finalized = [item for item in results if item is not None]
     return finalized, written

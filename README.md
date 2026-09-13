@@ -19,6 +19,16 @@ playwright install chromium
 
 编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU`。不要填写 POL。
 
+## 本地网页控制台
+
+查看每箱查询状态，并开始 / 结束任务（同一时间只能跑一批；点 Stop 会等当前箱查完）：
+
+```bash
+python app.py --serve
+```
+
+浏览器打开 `http://127.0.0.1:8765/`。输入仍是 `input/containers.xlsx`，结果写入 `output/containers_result.xlsx`。
+
 ## 运行
 
 单箱（目前实现 HLCU / YMJA）：

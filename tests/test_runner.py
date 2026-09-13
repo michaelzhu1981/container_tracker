@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from config import chrome_profile_dir, default_headed_for, query_delay_seconds
 from runner import (
     chrome_commands_using_profile,
@@ -51,6 +53,13 @@ def test_cli_no_wait_challenge_flag():
     assert default.no_wait_challenge is False
 
 
+def test_cli_serve_flag():
+    parser = build_parser()
+    args = parser.parse_args(["--serve", "--port", "9001"])
+    assert args.serve is True
+    assert args.port == 9001
+
+
 def test_chrome_commands_using_profile(monkeypatch):
     profile = Path("/tmp/sessions/chrome_hlcu")
     needle = f"--user-data-dir={profile.resolve()}"
@@ -86,7 +95,7 @@ def test_wait_for_system_chrome_closed_never_starts(monkeypatch):
 
 def test_handoff_without_tty_waits_for_chrome_close(monkeypatch):
     monkeypatch.setattr("runner.stdin_can_accept_enter", lambda: False)
-    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p: True)
+    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p, **kwargs: True)
     assert wait_for_human_after_chrome_handoff("/tmp/profile") is True
 
 
@@ -97,5 +106,84 @@ def test_handoff_eof_falls_back_to_chrome_close(monkeypatch):
         raise EOFError
 
     monkeypatch.setattr("builtins.input", boom)
-    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p: True)
+    monkeypatch.setattr("runner.wait_for_system_chrome_closed", lambda _p, **kwargs: True)
     assert wait_for_human_after_chrome_handoff("/tmp/profile") is True
+
+
+def test_chrome_wait_aborts(monkeypatch):
+    monkeypatch.setattr("runner.chrome_commands_using_profile", lambda _p: ["chrome"])
+    assert (
+        wait_for_system_chrome_closed(
+            "/x", timeout_s=2, appear_s=2, poll_s=0.01, should_abort=lambda: True
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_batch_stops_remaining_on_cancel(tmp_path: Path, monkeypatch):
+    import asyncio
+
+    from models import TrackResult
+    from runner import run_batch
+
+    tracked: list[str] = []
+    cancel = asyncio.Event()
+
+    async def fake_track(page, carrier, container, **kwargs):
+        tracked.append(container)
+        if container == "HLXU1234567":
+            cancel.set()
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    class FakePlaywright:
+        pass
+
+    class CM:
+        async def __aenter__(self):
+            return FakePlaywright()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeBrowser:
+        def __init__(self, playwright, carrier, **kwargs):
+            self.page = object()
+
+        async def start(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def ensure_open(self):
+            return None
+
+        def page_open(self):
+            return True
+
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: CM())
+    monkeypatch.setattr("runner.CarrierBrowser", FakeBrowser)
+    monkeypatch.setattr("runner._track_one", fake_track)
+
+    rows = [
+        {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
+        {"Container": "HLXU7654321", "Carrier": "HLCU", "extras": {}},
+        {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
+    ]
+    results, written = await run_batch(
+        rows,
+        output_path=tmp_path / "out.xlsx",
+        cancel_event=cancel,
+        wait_for_challenge=False,
+    )
+    assert tracked == ["HLXU1234567"]
+    assert [item.container for item in results] == ["HLXU1234567"]
+    assert written.exists()

@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Container Tracker</title>
+  <style>
+    :root {
+      --bg: #f3f2ee;
+      --paper: #fffcf7;
+      --ink: #1c1b18;
+      --muted: #6b6860;
+      --line: #d8d3c7;
+      --accent: #0f3d38;
+      --accent-soft: #dce8e4;
+      --rust: #9a3f1b;
+      --rust-soft: #f3e0d6;
+      --ok: #1f5c3a;
+      --ok-soft: #dce8df;
+      --warn: #8a5a12;
+      --warn-soft: #f3e8cf;
+      --fail: #8b1e1e;
+      --fail-soft: #f3d6d6;
+      --slate: #3f4340;
+      --slate-soft: #e4e4e0;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 22px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    .sub { color: var(--muted); font-size: 12px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      background: var(--slate-soft);
+      color: var(--slate);
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge.running, .badge.querying { background: var(--accent-soft); color: var(--accent); border-color: #b7cfc8; }
+    .badge.stopping { background: var(--rust-soft); color: var(--rust); border-color: #e2c2b0; }
+    .badge.completed, .badge.SAILED { background: var(--ok-soft); color: var(--ok); border-color: #b7d0c0; }
+    .badge.failed, .badge.CHECK_FAILED { background: var(--fail-soft); color: var(--fail); border-color: #e0b4b4; }
+    .badge.LOADED_WAITING_DEPARTURE, .badge.MANUAL_CHECK_REQUIRED { background: var(--warn-soft); color: var(--warn); border-color: #e2d2a8; }
+    .badge.NOT_LOADED, .badge.stopped, .badge.idle, .badge.pending { background: var(--slate-soft); color: var(--slate); }
+    .wrap { padding: 16px 22px 28px; display: grid; gap: 14px; }
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+    button {
+      font: inherit;
+      font-weight: 650;
+      padding: 7px 12px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      cursor: pointer;
+    }
+    button.secondary { background: var(--paper); color: var(--ink); }
+    button.danger { background: var(--paper); color: var(--rust); border-color: var(--rust); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    label.opt { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+    .carriers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--muted);
+      padding: 3px 8px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .chip.on { background: var(--accent-soft); color: var(--accent); border-color: #b7cfc8; }
+    .counts { display: flex; flex-wrap: wrap; gap: 8px; }
+    .count {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      padding: 6px 10px;
+      min-width: 92px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .count strong { display: block; font-size: 18px; font-weight: 650; }
+    .count span { color: var(--muted); font-size: 11px; letter-spacing: 0.02em; }
+    .count.active { border-color: var(--ink); }
+    .meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 18px; }
+    .progress {
+      height: 4px;
+      background: var(--line);
+    }
+    .progress > i {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      width: 0;
+    }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); background: var(--paper); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums; }
+    th, td { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+    th {
+      position: sticky;
+      top: 0;
+      background: #f7f4ee;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 650;
+    }
+    tr.querying td { background: var(--accent-soft); }
+    table .badge { padding: 0 5px; font-size: 10px; letter-spacing: 0.02em; }
+    td.event { max-width: 200px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+    a { color: var(--accent); }
+    .empty { padding: 16px; color: var(--muted); }
+    .pager {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-top: 0;
+      background: var(--paper);
+    }
+    .pager-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+    .pager button {
+      min-width: 28px;
+      padding: 3px 7px;
+      background: var(--paper);
+      color: var(--ink);
+    }
+    .pager button.active { background: var(--ink); color: var(--paper); }
+    .pager select {
+      font: inherit;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      padding: 3px 6px;
+    }
+    .pager-info { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Container Tracker</h1>
+      <div class="sub">Local console · watch query status · start and stop a job</div>
+    </div>
+    <div id="stateBadge" class="badge idle">idle</div>
+  </header>
+  <div class="wrap">
+    <div class="panel">
+      <div class="controls">
+        <button id="startBtn" type="button">Start job</button>
+        <button id="stopBtn" class="danger" type="button" disabled>Stop job</button>
+        <button id="reloadBtn" class="secondary" type="button">Reload from Excel</button>
+        <label class="opt"><input id="resume" type="checkbox"> Skip already SAILED</label>
+        <label class="opt"><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
+        <label class="opt"><input id="headed" type="checkbox"> Show browser</label>
+      </div>
+      <div class="controls" style="margin-top:10px">
+        <span class="sub">Carriers</span>
+        <div id="carrierChips" class="carriers"></div>
+      </div>
+    </div>
+    <div id="counts" class="counts"></div>
+    <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+    <div class="meta">
+      <div id="message">Loading…</div>
+      <div id="paths"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Container</th>
+            <th>Carrier</th>
+            <th>Phase</th>
+            <th>Status</th>
+            <th>Loaded</th>
+            <th>Sailed</th>
+            <th>Vessel</th>
+            <th>Voyage</th>
+            <th>ATD</th>
+            <th>POL</th>
+            <th>Latest event</th>
+            <th>Result</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>No container rows. Add boxes to input/containers.xlsx, then reload.</div>
+    </div>
+    <div id="pager" class="pager" hidden>
+      <div id="pagerInfo" class="pager-info"></div>
+      <div class="pager-nav">
+        <button type="button" id="firstPage" class="secondary">First</button>
+        <button type="button" id="prevPage" class="secondary">Prev</button>
+        <div id="pageButtons" class="pager-nav"></div>
+        <button type="button" id="nextPage" class="secondary">Next</button>
+        <button type="button" id="lastPage" class="secondary">Last</button>
+        <label class="opt">
+          Per page
+          <select id="pageSize">
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </div>
+  <script>
+    const COUNT_KEYS = [
+      ["QUERYING", "Querying"],
+      ["PENDING", "Pending"],
+      ["SAILED", "Sailed"],
+      ["LOADED_WAITING_DEPARTURE", "Loaded, waiting"],
+      ["NOT_LOADED", "Not loaded"],
+      ["MANUAL_CHECK_REQUIRED", "Manual check"],
+      ["CHECK_FAILED", "Failed"],
+    ];
+    const stateEl = document.getElementById("stateBadge");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const reloadBtn = document.getElementById("reloadBtn");
+    const rowsEl = document.getElementById("rows");
+    const emptyEl = document.getElementById("empty");
+    const countsEl = document.getElementById("counts");
+    const messageEl = document.getElementById("message");
+    const pathsEl = document.getElementById("paths");
+    const barEl = document.getElementById("bar");
+    const chipsEl = document.getElementById("carrierChips");
+    const pagerEl = document.getElementById("pager");
+    const pagerInfoEl = document.getElementById("pagerInfo");
+    const pageButtonsEl = document.getElementById("pageButtons");
+    const firstPageBtn = document.getElementById("firstPage");
+    const prevPageBtn = document.getElementById("prevPage");
+    const nextPageBtn = document.getElementById("nextPage");
+    const lastPageBtn = document.getElementById("lastPage");
+    const pageSizeEl = document.getElementById("pageSize");
+    let filter = "ALL";
+    let knownCarriers = [];
+    let page = 1;
+    let lastFilter = "ALL";
+    let lastCurrent = null;
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function badge(text, cls) {
+      const label = esc(text || "—");
+      return `<span class="badge ${esc(cls || text || "")}">${label}</span>`;
+    }
+
+    function shotLink(path) {
+      if (!path) return "";
+      const name = path.split(/[/\\]/).pop();
+      return `<a href="/screenshots/${encodeURIComponent(name)}" target="_blank" rel="noreferrer">shot</a>`;
+    }
+
+    function selectedCarriers() {
+      const on = [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
+      if (!on.length || on.length === knownCarriers.length) return null;
+      return on;
+    }
+
+    function renderChips(carriers, preserve) {
+      const selected = new Set(
+        preserve
+          ? [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier)
+          : carriers
+      );
+      chipsEl.innerHTML = carriers.map((code) =>
+        `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}">${code}</button>`
+      ).join("");
+    }
+
+    function render(data) {
+      const job = data.job;
+      const busy = job.state === "running" || job.state === "stopping";
+      stateEl.className = "badge " + job.state;
+      stateEl.textContent = job.state;
+      startBtn.disabled = busy;
+      stopBtn.disabled = job.state !== "running";
+      reloadBtn.disabled = busy;
+      const total = job.total || 0;
+      const done = job.done || 0;
+      barEl.style.width = total ? `${Math.round((done / total) * 100)}%` : "0";
+      messageEl.textContent = job.message || "";
+      pathsEl.textContent = `Input ${job.input || "—"} · Output ${job.output || "—"} · ${done}/${total}`;
+
+      if (data.carriers && data.carriers.length && !chipsEl.childElementCount) {
+        knownCarriers = data.carriers;
+        renderChips(data.carriers, false);
+      }
+
+      countsEl.innerHTML = [
+        `<button type="button" class="count${filter === "ALL" ? " active" : ""}" data-filter="ALL"><strong>${total}</strong><span>All</span></button>`,
+        ...COUNT_KEYS.map(([key, label]) =>
+          `<button type="button" class="count${filter === key ? " active" : ""}" data-filter="${key}"><strong>${data.counts[key] || 0}</strong><span>${label}</span></button>`
+        ),
+      ].join("");
+
+      const rows = (data.rows || []).filter((row) => {
+        if (filter === "ALL") return true;
+        if (filter === "QUERYING") return row.phase === "querying";
+        if (filter === "PENDING") return row.phase === "pending";
+        return row.status === filter;
+      });
+      const pageSize = Number(pageSizeEl.value) || 20;
+      if (filter !== lastFilter) {
+        page = 1;
+        lastFilter = filter;
+      }
+      if (job.current_index != null && job.current_index !== lastCurrent) {
+        const pos = rows.findIndex((row) => row.index === job.current_index);
+        if (pos >= 0) page = Math.floor(pos / pageSize) + 1;
+        lastCurrent = job.current_index;
+      }
+      const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+      page = Math.min(Math.max(1, page), pageCount);
+      const start = (page - 1) * pageSize;
+      const pageRows = rows.slice(start, start + pageSize);
+      const hasRows = rows.length > 0;
+      emptyEl.hidden = hasRows;
+      emptyEl.textContent = data.rows.length
+        ? "No rows match this filter."
+        : "No container rows. Add boxes to input/containers.xlsx, then reload.";
+      rowsEl.innerHTML = pageRows.map((row) => `
+        <tr class="${row.phase}" id="row-${row.index}">
+          <td>${row.index + 1}</td>
+          <td>${esc(row.container)}</td>
+          <td>${esc(row.carrier)}</td>
+          <td>${badge(row.phase)}</td>
+          <td>${row.status ? badge(row.status) : "—"}</td>
+          <td>${esc(row.loaded || "—")}</td>
+          <td>${esc(row.sailed || "—")}</td>
+          <td>${esc(row.vessel || "—")}</td>
+          <td>${esc(row.voyage || "—")}</td>
+          <td>${esc(row.atd || "—")}</td>
+          <td>${esc(row.pol || "—")}</td>
+          <td class="event" title="${esc(row.latest_event || "")}">${esc(row.latest_event || "—")}</td>
+          <td>${esc(row.check_result || "—")}${row.screenshot ? " · " + shotLink(row.screenshot) : ""}</td>
+          <td class="event">${esc(row.error_code || row.error || "—")}</td>
+        </tr>
+      `).join("");
+      pagerEl.hidden = !hasRows;
+      const from = rows.length ? start + 1 : 0;
+      const to = Math.min(start + pageSize, rows.length);
+      pagerInfoEl.textContent = `Showing ${from}–${to} of ${rows.length}`;
+      firstPageBtn.disabled = page <= 1;
+      prevPageBtn.disabled = page <= 1;
+      nextPageBtn.disabled = page >= pageCount;
+      lastPageBtn.disabled = page >= pageCount;
+      const windowStart = Math.max(1, page - 2);
+      const windowEnd = Math.min(pageCount, windowStart + 4);
+      const pages = [];
+      for (let n = windowStart; n <= windowEnd; n += 1) pages.push(n);
+      pageButtonsEl.innerHTML = pages.map((n) =>
+        `<button type="button" class="${n === page ? "active" : "secondary"}" data-page="${n}">${n}</button>`
+      ).join("");
+      if (job.current_index != null) {
+        const current = document.getElementById("row-" + job.current_index);
+        if (current) current.scrollIntoView({ block: "nearest" });
+      }
+    }
+
+    async function api(path, options) {
+      const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || res.statusText);
+      return body;
+    }
+
+    async function refresh() {
+      render(await api("/api/status"));
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        render(await api("/api/start", {
+          method: "POST",
+          body: JSON.stringify({
+            resume: document.getElementById("resume").checked,
+            wait_for_challenge: document.getElementById("waitChallenge").checked,
+            headed: document.getElementById("headed").checked,
+            carriers: selectedCarriers(),
+          }),
+        }));
+      } catch (err) {
+        messageEl.textContent = String(err.message || err);
+      }
+    });
+    stopBtn.addEventListener("click", async () => {
+      try { render(await api("/api/stop", { method: "POST", body: "{}" })); }
+      catch (err) { messageEl.textContent = String(err.message || err); }
+    });
+    reloadBtn.addEventListener("click", async () => {
+      try { render(await api("/api/reload", { method: "POST", body: "{}" })); }
+      catch (err) { messageEl.textContent = String(err.message || err); }
+    });
+    countsEl.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-filter]");
+      if (!btn) return;
+      filter = btn.dataset.filter;
+      page = 1;
+      refresh();
+    });
+    firstPageBtn.addEventListener("click", () => { page = 1; refresh(); });
+    prevPageBtn.addEventListener("click", () => { page = Math.max(1, page - 1); refresh(); });
+    nextPageBtn.addEventListener("click", () => { page += 1; refresh(); });
+    lastPageBtn.addEventListener("click", () => { page = Number.MAX_SAFE_INTEGER; refresh(); });
+    pageButtonsEl.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-page]");
+      if (!btn) return;
+      page = Number(btn.dataset.page);
+      refresh();
+    });
+    pageSizeEl.addEventListener("change", () => {
+      page = 1;
+      refresh();
+    });
+    chipsEl.addEventListener("click", (event) => {
+      const chip = event.target.closest(".chip");
+      if (!chip) return;
+      chip.classList.toggle("on");
+    });
+
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

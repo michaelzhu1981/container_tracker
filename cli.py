@@ -67,12 +67,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reuse SAILED rows from the existing result file.",
     )
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Open the local web UI to watch status and start or stop a job.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Web UI bind address.")
+    parser.add_argument("--port", type=int, default=8765, help="Web UI port.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging()
+    if args.serve:
+        from web import run_server
+
+        url = f"http://{args.host}:{args.port}/"
+        print("Container Tracker")
+        print("===================================")
+        print()
+        print(f"Web UI: {url}")
+        print("Use the page to watch query status and start or stop a job.")
+        try:
+            import threading
+            import webbrowser
+
+            threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        except Exception:  # noqa: BLE001
+            pass
+        run_server(args.host, args.port)
+        return 0
     headed = bool(args.headed or args.wait_challenge or not HEADLESS)
     wait_for_challenge = not bool(args.no_wait_challenge)
 
