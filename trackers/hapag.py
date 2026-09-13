@@ -202,6 +202,10 @@ def parse_hapag_html(html: str) -> list[CanonicalEvent]:
 
 class HapagTracker(BaseTracker):
     carrier_code = "HLCU"
+    wait_in_current_browser = True
+    use_system_chrome = True
+    system_chrome_host = "hapag-lloyd.com"
+    system_chrome_challenge = "Cloudflare"
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (

@@ -227,11 +227,13 @@ class CarrierBrowser:
             except Exception:  # noqa: BLE001
                 LOGGER.info("Closed Playwright before opening system Chrome for %s.", self.carrier)
             self.context = None
-        tracker_cls = TRACKERS.get(self.carrier)
-        url = getattr(tracker_cls, "tracking_url", "") if tracker_cls else ""
-        host = "cma-cgm.com" if self.carrier == "CMDU" else ""
+        settings = system_chrome_settings(self.carrier)
         self.page = SystemChromePage(
-            url, host=host, should_abort=self.should_abort
+            settings["url"],
+            host=settings["host"],
+            carrier=settings["carrier"],
+            challenge_name=settings["challenge_name"],
+            should_abort=self.should_abort,
         )
         await self.page.start()
 
@@ -410,8 +412,23 @@ def unlocks_in_current_browser(carrier: str) -> bool:
 
 
 def uses_system_chrome(carrier: str) -> bool:
-    """CMDU DataDome fails under Playwright CDP; use the user's Chrome instead."""
-    return carrier == "CMDU"
+    """DataDome / Cloudflare fail under Playwright CDP; use the user's Chrome."""
+    tracker_cls = TRACKERS.get(carrier)
+    return bool(tracker_cls and getattr(tracker_cls, "use_system_chrome", False))
+
+
+def system_chrome_settings(carrier: str) -> dict[str, str]:
+    tracker_cls = TRACKERS.get(carrier)
+    return {
+        "url": getattr(tracker_cls, "tracking_url", "") if tracker_cls else "",
+        "host": getattr(tracker_cls, "system_chrome_host", "") if tracker_cls else "",
+        "carrier": getattr(tracker_cls, "carrier_code", carrier) if tracker_cls else carrier,
+        "challenge_name": (
+            getattr(tracker_cls, "system_chrome_challenge", "the security check")
+            if tracker_cls
+            else "the security check"
+        ),
+    }
 
 
 async def unlock_carrier_session(
@@ -809,7 +826,9 @@ async def run_batch(
                                 "CAPTCHA",
                                 reason=(
                                     f"Skipped remaining {carrier} rows; "
-                                    "open Google Chrome, complete DataDome, and retry."
+                                    "open Google Chrome, complete "
+                                    f"{system_chrome_settings(carrier)['challenge_name']}, "
+                                    "and retry."
                                 ),
                             ),
                         )

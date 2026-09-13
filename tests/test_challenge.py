@@ -346,24 +346,10 @@ def test_human_handoff_opens_system_chrome_instead_of_clicking_widget(monkeypatc
     assert challenge_code(page.text) is None
 
 
-def test_hlcu_hands_off_cloudflare_to_system_chrome(monkeypatch):
-    from trackers.hapag import HapagTracker
-
-    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
-    page = FakePage(text="verify you are human")
-    browser = _HandoffBrowser(page)
-    messages = []
-    browser.on_challenge = messages.append
-    tracker = HapagTracker(page, wait_for_challenge=True, browser=browser)
-    asyncio.run(tracker.pass_or_wait_for_challenge())
-    assert browser.handed is True
-    assert any(item.get("mode") == "system_chrome" for item in messages)
-    assert challenge_code(page.text) is None
-
-
-@pytest.mark.parametrize("tracker_name", ["cma", "maersk"])
-def test_cmdu_maeu_keep_verification_in_same_window(monkeypatch, tracker_name):
+@pytest.mark.parametrize("tracker_name", ["cma", "maersk", "hapag"])
+def test_cmdu_maeu_hlcu_keep_verification_in_same_window(monkeypatch, tracker_name):
     from trackers.cma import CmaTracker
+    from trackers.hapag import HapagTracker
     from trackers.maersk import MaerskTracker
 
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
@@ -371,7 +357,7 @@ def test_cmdu_maeu_keep_verification_in_same_window(monkeypatch, tracker_name):
     browser = _HandoffBrowser(page)
     messages = []
     browser.on_challenge = messages.append
-    cls = CmaTracker if tracker_name == "cma" else MaerskTracker
+    cls = {"cma": CmaTracker, "maersk": MaerskTracker, "hapag": HapagTracker}[tracker_name]
     tracker = cls(page, wait_for_challenge=True, browser=browser)
     assert asyncio.run(tracker.pass_or_wait_for_challenge()) is True
     assert browser.handed is False
@@ -395,6 +381,21 @@ def test_cma_prepare_session_waits_in_current_window(monkeypatch):
     page.url = "https://www.cma-cgm.com/ebusiness/tracking"
     browser = _HandoffBrowser(page)
     tracker = CmaTracker(page, wait_for_challenge=True, browser=browser)
+    asyncio.run(tracker.prepare_session())
+    assert browser.handed is False
+    assert tracker.page is page
+    assert challenge_code(page.text) is None
+
+
+def test_hapag_prepare_session_waits_in_current_window(monkeypatch):
+    from trackers.hapag import HapagTracker
+
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
+    monkeypatch.setattr("trackers.base.CURRENT_BROWSER_WAIT_MS", 5_000)
+    page = FakePage(text="Please complete the CAPTCHA", succeed_on_call=1)
+    page.url = "https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html"
+    browser = _HandoffBrowser(page)
+    tracker = HapagTracker(page, wait_for_challenge=True, browser=browser)
     asyncio.run(tracker.prepare_session())
     assert browser.handed is False
     assert tracker.page is page

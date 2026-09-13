@@ -435,6 +435,9 @@ def parse_cma_html(html: str) -> list[CanonicalEvent]:
 class CmaTracker(BaseTracker):
     carrier_code = "CMDU"
     wait_in_current_browser = True
+    use_system_chrome = True
+    system_chrome_host = "cma-cgm.com"
+    system_chrome_challenge = "DataDome"
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (

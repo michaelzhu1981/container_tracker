@@ -175,10 +175,27 @@ def set_chrome_tab_url(url: str, *, host: str) -> None:
 _DEFAULT_SHOT_ROOT_JS = """(document.querySelector("#trackingsearchsection")
     || document.querySelector("#gridTrackingDetails")
     || document.querySelector(".tracking-details")
+    || document.querySelector(".hal-event-tracking")
     || document.body)"""
 
-# Paint the already-laid-out result card. Chrome Apple Events cannot take a
-# real window screenshot (no CDP; macOS Screen Recording is often off).
+_ELEMENT_SCREEN_RECT_JS = r"""() => {
+    const root = __ROOT__;
+    if (!root) return null;
+    try { root.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (err) {}
+    const r = root.getBoundingClientRect();
+    if (r.width < 20 || r.height < 20) return null;
+    const chromeX = Math.max(0, window.outerWidth - window.innerWidth);
+    const chromeY = Math.max(0, window.outerHeight - window.innerHeight);
+    return {
+        x: Math.round(window.screenX + chromeX / 2 + r.left),
+        y: Math.round(window.screenY + chromeY + r.top),
+        w: Math.round(r.width),
+        h: Math.round(r.height)
+    };
+}"""
+
+# Fallback when macOS window capture is unavailable. This paints boxes and
+# text, so custom webfonts can look wrong.
 _DOM_SCREENSHOT_JS = r"""() => {
     const root = __ROOT__;
     if (!root) return null;
@@ -297,8 +314,137 @@ def _screenshot_root_js(selector: str | None = None) -> str:
     return f"""(() => {{
         const el = {found};
         if (!el) return null;
-        return el.closest("#trackingsearchsection, .tracking-details") || el;
+        return el.closest("#trackingsearchsection, .tracking-details, .hal-event-tracking") || el;
     }})()"""
+
+
+def _parse_rect(data: Any) -> tuple[int, int, int, int] | None:
+    if not isinstance(data, dict):
+        return None
+    try:
+        x, y = int(data["x"]), int(data["y"])
+        width, height = int(data["w"]), int(data["h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if width < 20 or height < 20:
+        return None
+    return x, y, width, height
+
+
+def _bounds_to_rect(raw: str) -> tuple[int, int, int, int] | None:
+    parts = [part.strip() for part in raw.replace("{", "").replace("}", "").split(",") if part.strip()]
+    if len(parts) != 4:
+        return None
+    try:
+        left, top, right, bottom = (int(float(part)) for part in parts)
+    except ValueError:
+        return None
+    width, height = right - left, bottom - top
+    if width < 20 or height < 20:
+        return None
+    return left, top, width, height
+
+
+def _png_looks_valid(path: Path) -> bool:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False
+    return len(raw) > 1000 and raw[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def activate_chrome_host(host: str) -> bool:
+    host_lit = json.dumps(host)
+    source = f"""
+    tell application "Google Chrome"
+        activate
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    if URL of t contains {host_lit} then
+                        set active tab index of w to (index of t)
+                        set index of w to 1
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return false
+    """
+    try:
+        return run_osascript(source).lower() == "true"
+    except SystemChromeError:
+        return False
+
+
+def chrome_window_rect(*, host: str) -> tuple[int, int, int, int] | None:
+    host_lit = json.dumps(host)
+    source = f"""
+    tell application "Google Chrome"
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    if URL of t contains {host_lit} then
+                        set b to bounds of w
+                        return (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string)
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    """
+    try:
+        return _bounds_to_rect(run_osascript(source))
+    except SystemChromeError:
+        return None
+
+
+def _rect_inside(
+    inner: tuple[int, int, int, int], outer: tuple[int, int, int, int]
+) -> bool:
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    return ix >= ox - 8 and iy >= oy - 8 and ix + iw <= ox + ow + 8 and iy + ih <= oy + oh + 8
+
+
+def _screencapture_rect(rect: tuple[int, int, int, int], dest: Path) -> bool:
+    x, y, width, height = rect
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.unlink(missing_ok=True)
+    result = subprocess.run(
+        ["screencapture", "-x", "-R", f"{x},{y},{width},{height}", str(dest)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    return result.returncode == 0 and _png_looks_valid(dest)
+
+
+def _try_window_screenshot(
+    path: str | Path, *, host: str, selector: str | None = None
+) -> bool:
+    dest = Path(path)
+    activate_chrome_host(host)
+    time.sleep(0.35)
+    window = chrome_window_rect(host=host)
+    if window is None:
+        LOGGER.info("No on-screen Chrome window found for %s", host)
+        return False
+    rect = window
+    try:
+        script = _ELEMENT_SCREEN_RECT_JS.replace("__ROOT__", _screenshot_root_js(selector), 1)
+        element = _parse_rect(chrome_js(script, host=host))
+    except SystemChromeError:
+        element = None
+    if element is not None and _rect_inside(element, window):
+        rect = element
+    try:
+        return _screencapture_rect(rect, dest)
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        dest.unlink(missing_ok=True)
+        return False
 
 
 def write_png_data_url(data: Any, path: str | Path) -> Path:
@@ -314,9 +460,13 @@ def write_png_data_url(data: Any, path: str | Path) -> Path:
 
 
 def capture_chrome_png(path: str | Path, *, host: str, selector: str | None = None) -> Path:
-    script = _DOM_SCREENSHOT_JS.replace("__ROOT__", _screenshot_root_js(selector), 1)
-    data = chrome_js(script, host=host)
-    return write_png_data_url(data, path)
+    dest = Path(path)
+    if _try_window_screenshot(dest, host=host, selector=selector):
+        return dest
+    raise SystemChromeError(
+        f"Could not capture the Chrome window for {host}. "
+        "Keep that window visible and try again."
+    )
 
 
 class SystemLocator:
@@ -419,9 +569,13 @@ class SystemChromePage:
         host: str,
         should_abort: Callable[[], bool] | None = None,
         appear_s: float = 30.0,
+        carrier: str = "CMDU",
+        challenge_name: str = "DataDome",
     ) -> None:
         self._target_url = url
         self._host = host
+        self._carrier = carrier
+        self._challenge_name = challenge_name
         self.should_abort = should_abort
         self.appear_s = appear_s
         self.keyboard = _Keyboard(self)
@@ -429,8 +583,8 @@ class SystemChromePage:
 
     async def start(self) -> None:
         print()
-        print("Opening a normal Google Chrome window for CMDU.")
-        print("Complete DataDome in that window and keep it open.")
+        print(f"Opening a normal Google Chrome window for {self._carrier}.")
+        print(f"Complete {self._challenge_name} in that window and keep it open.")
         print("If Chrome asks, enable View → Developer → Allow JavaScript from Apple Events.")
         print()
         if not chrome_tab_url(host=self._host):
@@ -444,12 +598,14 @@ class SystemChromePage:
                 await self._wait_until_js_enabled()
                 return
             await asyncio.sleep(0.5)
-        raise SystemChromeError("Google Chrome did not open the CMA tracking page.")
+        raise SystemChromeError(
+            f"Google Chrome did not open the {self._carrier} tracking page."
+        )
 
     async def _wait_until_js_enabled(self, timeout_s: float = 600) -> None:
         print(
             "In that Chrome window: View → Developer → Allow JavaScript from Apple Events. "
-            "Then complete DataDome and keep the window open."
+            f"Then complete {self._challenge_name} and keep the window open."
         )
         deadline = time.monotonic() + timeout_s
         last = ""
@@ -459,7 +615,10 @@ class SystemChromePage:
             try:
                 value = await asyncio.to_thread(chrome_js, "() => 1", host=self._host)
                 if value in {1, "1", True}:
-                    print("Chrome Apple Event JavaScript is on. Waiting for DataDome if needed.")
+                    print(
+                        "Chrome Apple Event JavaScript is on. "
+                        f"Waiting for {self._challenge_name} if needed."
+                    )
                     return
             except SystemChromeError as exc:
                 last = str(exc)

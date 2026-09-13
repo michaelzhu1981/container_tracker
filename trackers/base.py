@@ -61,6 +61,11 @@ _HIDE_OVERLAYS_JS = """() => {
         "[role='dialog']",
         "[class*='login-modal' i]",
         "[class*='signin' i][class*='modal' i]",
+        ".q-page-sticky",
+        "[class*='chat-widget' i]",
+        "[class*='ChatWidget']",
+        "#hubspot-messages-iframe-container",
+        ".embeddedMessagingConversationButton",
     ];
     for (const selector of selectors) {
         try {
@@ -165,6 +170,9 @@ class BaseTracker(ABC):
     tracking_url: str = ""
     screenshot_selectors: tuple[str, ...] = ()
     wait_in_current_browser: bool = False
+    use_system_chrome: bool = False
+    system_chrome_host: str = ""
+    system_chrome_challenge: str = "the security check"
 
     def __init__(
         self,

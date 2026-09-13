@@ -9,6 +9,7 @@ from runner import (
     chrome_launch_args,
     playwright_context_kwargs,
     should_relaunch_browser_per_box,
+    system_chrome_settings,
     unlocks_in_current_browser,
     update_circuit,
     uses_system_chrome,
@@ -21,11 +22,17 @@ from cli import build_parser
 def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("CMDU") is True
     assert unlocks_in_current_browser("MAEU") is True
-    assert unlocks_in_current_browser("HLCU") is False
+    assert unlocks_in_current_browser("HLCU") is True
     assert unlocks_in_current_browser("MSCU") is False
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("MAEU") is False
-    assert uses_system_chrome("HLCU") is False
+    assert uses_system_chrome("HLCU") is True
+    hlcu = system_chrome_settings("HLCU")
+    assert hlcu["host"] == "hapag-lloyd.com"
+    assert hlcu["challenge_name"] == "Cloudflare"
+    cmdu = system_chrome_settings("CMDU")
+    assert cmdu["host"] == "cma-cgm.com"
+    assert cmdu["challenge_name"] == "DataDome"
 
 
 def test_hlcu_does_not_relaunch_browser_per_box():
