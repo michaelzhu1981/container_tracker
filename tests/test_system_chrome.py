@@ -49,6 +49,7 @@ def test_find_element_js_supports_has_text():
 def test_screenshot_root_prefers_tracking_section():
     assert "#trackingsearchsection" in _screenshot_root_js()
     assert ".hal-event-tracking" in _screenshot_root_js()
+    assert "unitActivity" in _screenshot_root_js()
     scoped = _screenshot_root_js("#gridTrackingDetails")
     assert "closest" in scoped
     assert "#gridTrackingDetails" in scoped

@@ -31,6 +31,7 @@ def test_cmdu_unlocks_in_current_browser():
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("HDMU") is True
     assert uses_system_chrome("OOLU") is True
+    assert uses_system_chrome("ZIMU") is True
     assert uses_system_chrome("MAEU") is False
     assert uses_system_chrome("HLCU") is True
     hlcu = system_chrome_settings("HLCU")
@@ -46,6 +47,10 @@ def test_cmdu_unlocks_in_current_browser():
     assert oolu["host"] == "oocl.com"
     assert oolu["challenge_name"] == "CAPTCHA"
     assert "cargotracking.aspx" in oolu["url"]
+    zimu = system_chrome_settings("ZIMU")
+    assert zimu["host"] == "zim.com"
+    assert zimu["challenge_name"] == "hCaptcha"
+    assert "track-a-shipment" in zimu["url"]
 
 
 def test_hlcu_does_not_relaunch_browser_per_box():

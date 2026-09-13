@@ -1,7 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from status_engine import evaluate
-from trackers.zim import json_mentions_container, parse_zim_html, parse_zim_payload
+from trackers.base import TrackerError
+from trackers.zim import (
+    TRACK_QUERY_URL,
+    ZimTracker,
+    _SEARCH_FIELD_SELECTORS,
+    json_mentions_container,
+    parse_zim_html,
+    parse_zim_payload,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "zim"
 
@@ -56,6 +66,60 @@ def test_parse_zim_payload():
     )
     assert events[0].type == "DEPA"
     assert events[0].voyage == "046E"
+
+
+def test_zim_uses_system_chrome_like_cmdu():
+    assert ZimTracker.use_system_chrome is True
+    assert ZimTracker.wait_in_current_browser is True
+    assert ZimTracker.system_chrome_host == "zim.com"
+    assert ZimTracker.system_chrome_challenge == "hCaptcha"
+    assert "input[type='text']" not in _SEARCH_FIELD_SELECTORS
+    assert "input.chips-input" in _SEARCH_FIELD_SELECTORS
+
+
+@pytest.mark.asyncio
+async def test_search_stays_on_form_instead_of_query_url():
+    gotos: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "chips-input" in self.selector or "chips-search-button" in self.selector
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def click(self, **kwargs):
+            return None
+
+        async def fill(self, value):
+            return None
+
+        async def press(self, key):
+            return None
+
+    class Page:
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def goto(self, url, **kwargs):
+            gotos.append(url)
+
+        async def evaluate(self, script, arg=None):
+            return ""
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+        def on(self, event, handler):
+            return None
+
+    await ZimTracker(Page()).search("TCNU3698035")
+    assert not any("consnumber=" in url for url in gotos)
+    assert TRACK_QUERY_URL.format(number="TCNU3698035") not in gotos
 
 
 def test_zim_payload_mentions_container():

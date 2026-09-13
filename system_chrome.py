@@ -329,6 +329,7 @@ _DEFAULT_SHOT_ROOT_JS = """(document.querySelector("#trackingsearchsection")
     || document.querySelector("#gridTrackingDetails")
     || document.querySelector(".tracking-details")
     || document.querySelector(".hal-event-tracking")
+    || document.querySelector("[class*='unitActivity']")
     || document.body)"""
 
 _ELEMENT_SCREEN_RECT_JS = r"""() => {

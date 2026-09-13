@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from urllib.parse import quote
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -39,6 +38,18 @@ _JSON_VOY_KEYS = ("voyage", "voyageno")
 
 _VOYAGE_RE = re.compile(r"\b(\d{2,4}[A-Z])\b", re.I)
 _SKIP_STATUS = frozenset({"", "activity", "event", "status", "movement"})
+_SEARCH_FIELD_SELECTORS = (
+    "input.chips-input",
+    "input[placeholder*='container' i]",
+    "input[placeholder*='B/L' i]",
+    "input[placeholder*='Insert' i]",
+    "input[name*='cons' i]",
+)
+_SUBMIT_BUTTON_SELECTORS = (
+    "input.chips-search-button",
+    "button:has-text('Search')",
+    "button[type='submit']",
+)
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -244,6 +255,9 @@ def _looks_like_zim_payload(payload: object) -> bool:
 class ZimTracker(BaseTracker):
     carrier_code = "ZIMU"
     wait_in_current_browser = True
+    use_system_chrome = True
+    system_chrome_host = "zim.com"
+    system_chrome_challenge = "hCaptcha"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
@@ -273,6 +287,8 @@ class ZimTracker(BaseTracker):
     async def _bind_tracking_response(self) -> None:
         page = self.page
         if page is None or getattr(page, "_ct_zim_bound", False):
+            return
+        if getattr(page, "is_system_chrome", False):
             return
         event = asyncio.Event()
         setattr(page, "_ct_zim_response_event", event)
@@ -310,6 +326,27 @@ class ZimTracker(BaseTracker):
             return
         await self.dismiss_cookies(wait_ms=12_000)
 
+    async def _first_visible_search_field(self):
+        for selector in _SEARCH_FIELD_SELECTORS:
+            locator = self.page.locator(selector)
+            try:
+                if await locator.first.is_visible(timeout=1_500):
+                    return locator
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    async def _click_search_button(self) -> bool:
+        for selector in _SUBMIT_BUTTON_SELECTORS:
+            button = self.page.locator(selector)
+            try:
+                if await button.first.is_visible(timeout=800):
+                    await button.first.click(timeout=8_000)
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self._bind_tracking_response()
@@ -317,49 +354,20 @@ class ZimTracker(BaseTracker):
             setattr(self.page, "_ct_zim_expected", container)
         self._clear_captured_json()
         await self.dismiss_cookies(wait_ms=0)
-        field = self.page.locator(
-            "input.chips-input, input[placeholder*='container' i], "
-            "input[placeholder*='B/L' i], input[type='text']"
-        )
-        try:
-            await field.first.wait_for(state="visible", timeout=12_000)
-        except Exception:  # noqa: BLE001
-            await self.page.goto(
-                TRACK_QUERY_URL.format(number=quote(container)),
-                wait_until="domcontentloaded",
-            )
+        field = await self._first_visible_search_field()
+        if field is None:
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
-            field = self.page.locator("input.chips-input, input[type='text']")
-            try:
-                await field.first.wait_for(state="visible", timeout=12_000)
-            except Exception as retry_exc:  # noqa: BLE001
-                raise TrackerError(
-                    "Could not find the container search field.", "SELECTOR"
-                ) from retry_exc
+            field = await self._first_visible_search_field()
+        if field is None:
+            raise TrackerError("Could not find the container search field.", "SELECTOR")
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
-        search = self.page.locator(
-            "input.chips-search-button, button:has-text('Search'), button[type='submit']"
-        )
-        clicked = False
-        try:
-            if await search.first.is_visible(timeout=800):
-                await search.first.click(timeout=8_000)
-                clicked = True
-        except Exception:  # noqa: BLE001
-            clicked = False
-        if not clicked:
+        if not await self._click_search_button():
             await field.first.press("Enter")
         self._search_submitted = True
         await self._wait_for_results()
-        if not await self._has_tracking_result() and not await self._page_challenge_code():
-            await self.page.goto(
-                TRACK_QUERY_URL.format(number=quote(container)),
-                wait_until="domcontentloaded",
-            )
-            await self.dismiss_cookies(wait_ms=0)
-            await self._wait_for_results()
 
     async def _has_tracking_result(self) -> bool:
         try:
