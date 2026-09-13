@@ -4,7 +4,7 @@ import pytest
 
 from config import chrome_profile_dir, default_headed_for, query_delay_seconds
 from runner import (
-    carrier_schedule_waves,
+    carrier_schedule_lanes,
     chrome_commands_using_profile,
     chrome_launch_args,
     playwright_context_kwargs,
@@ -238,8 +238,8 @@ async def test_run_batch_stops_remaining_on_cancel(tmp_path: Path, monkeypatch):
         cancel_event=cancel,
         wait_for_challenge=False,
     )
-    assert tracked == ["YMLU1234567", "HLXU1234567"]
-    assert [item.container for item in results] == ["HLXU1234567", "YMLU1234567"]
+    assert "HLXU1234567" in tracked
+    assert "HLXU7654321" not in tracked
     assert written.exists()
 
 
@@ -280,20 +280,17 @@ def _fake_playwright_browser(monkeypatch):
     monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
 
 
-def test_carrier_schedule_waves_headless_then_headed():
-    assert carrier_schedule_waves(["CMDU", "ONEY", "HLCU", "YMJA", "MSCU", "MAEU"]) == [
+def test_carrier_schedule_lanes_overlap_headless_and_headed():
+    assert carrier_schedule_lanes(["CMDU", "ONEY", "HLCU", "YMJA", "MSCU", "MAEU"]) == (
         ["ONEY", "YMJA"],
-        ["MSCU"],
-        ["MAEU"],
-        ["HLCU"],
-        ["CMDU"],
-    ]
-    assert carrier_schedule_waves(["HLCU", "CMDU"]) == [["HLCU"], ["CMDU"]]
-    assert carrier_schedule_waves(["ONEY"]) == [["ONEY"]]
+        ["MSCU", "MAEU", "HLCU", "CMDU"],
+    )
+    assert carrier_schedule_lanes(["HLCU", "CMDU"]) == ([], ["HLCU", "CMDU"])
+    assert carrier_schedule_lanes(["ONEY"]) == (["ONEY"], [])
 
 
 @pytest.mark.asyncio
-async def test_run_batch_runs_headless_together_then_headed_serial(
+async def test_run_batch_starts_headed_without_waiting_for_headless(
     tmp_path: Path, monkeypatch
 ):
     import asyncio
@@ -305,7 +302,7 @@ async def test_run_batch_runs_headless_together_then_headed_serial(
     started: list[str] = []
     max_active = 0
     snapshots: list[frozenset[str]] = []
-    headless_ready = asyncio.Event()
+    first_wave = asyncio.Event()
     release = asyncio.Event()
 
     async def fake_track(page, carrier, container, **kwargs):
@@ -314,8 +311,8 @@ async def test_run_batch_runs_headless_together_then_headed_serial(
         started.append(carrier)
         max_active = max(max_active, len(active))
         snapshots.append(frozenset(active))
-        if {"ONEY", "YMJA"} <= set(started) and not headless_ready.is_set():
-            headless_ready.set()
+        if {"ONEY", "YMJA", "MSCU"} <= set(started) and not first_wave.is_set():
+            first_wave.set()
         await release.wait()
         active.remove(carrier)
         return TrackResult(
@@ -341,17 +338,17 @@ async def test_run_batch_runs_headless_together_then_headed_serial(
     task = asyncio.create_task(
         run_batch(rows, output_path=tmp_path / "out.xlsx")
     )
-    await asyncio.wait_for(headless_ready.wait(), timeout=2)
+    await asyncio.wait_for(first_wave.wait(), timeout=2)
     await asyncio.sleep(0)
-    assert set(started) == {"ONEY", "YMJA"}
-    assert max_active == 2
+    assert set(started) == {"ONEY", "YMJA", "MSCU"}
+    assert max_active == 3
     release.set()
     results, _written = await asyncio.wait_for(task, timeout=2)
     assert len(results) == 6
-    assert set(started[:2]) == {"ONEY", "YMJA"}
-    assert started[2:] == ["MSCU", "MAEU", "HLCU", "CMDU"]
-    headed_snaps = [snap for snap in snapshots if snap & {"MSCU", "MAEU", "HLCU", "CMDU"}]
-    assert all(len(snap) == 1 for snap in headed_snaps)
+    assert set(started[:3]) == {"ONEY", "YMJA", "MSCU"}
+    assert started[3:] == ["MAEU", "HLCU", "CMDU"]
+    headed = {"MSCU", "MAEU", "HLCU", "CMDU"}
+    assert all(len(snap & headed) <= 1 for snap in snapshots)
 
 
 @pytest.mark.asyncio

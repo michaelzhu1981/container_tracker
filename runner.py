@@ -611,25 +611,22 @@ def _cancelled(cancel_event: asyncio.Event | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
 
 
-def carrier_schedule_waves(carriers: list[str] | set[str]) -> list[list[str]]:
-    """Headless ONEY/YMJA together, then headed carriers one at a time."""
+def carrier_schedule_lanes(
+    carriers: list[str] | set[str],
+) -> tuple[list[str], list[str]]:
+    """Run headless ONEY/YMJA together; headed carriers stay serial."""
     present = set(carriers)
-    waves: list[list[str]] = []
-    headless = [code for code in HEADLESS_PARALLEL_CARRIERS if code in present]
-    if headless:
-        waves.append(headless)
+    parallel = [code for code in HEADLESS_PARALLEL_CARRIERS if code in present]
+    serial = [code for code in HEADED_SERIAL_CARRIERS if code in present]
     known = set(HEADLESS_PARALLEL_CARRIERS) | set(HEADED_SERIAL_CARRIERS)
-    for code in HEADED_SERIAL_CARRIERS:
-        if code in present:
-            waves.append([code])
     leftovers = [code for code in carriers if code not in known]
     seen: set[str] = set()
     for code in leftovers:
         if code in seen:
             continue
         seen.add(code)
-        waves.append([code])
-    return waves
+        serial.append(code)
+    return parallel, serial
 
 
 class BatchCheckpointWriter:
@@ -1005,15 +1002,25 @@ async def run_batch(
                 finally:
                     await session.close()
 
-            for wave in carrier_schedule_waves(list(by_carrier)):
-                if _cancelled(cancel_event):
-                    break
+            parallel, serial = carrier_schedule_lanes(list(by_carrier))
+
+            async def run_parallel() -> None:
+                if not parallel:
+                    return
                 await asyncio.gather(
                     *(
                         run_carrier(carrier, by_carrier[carrier])
-                        for carrier in wave
+                        for carrier in parallel
                     )
                 )
+
+            async def run_serial() -> None:
+                for carrier in serial:
+                    if _cancelled(cancel_event):
+                        return
+                    await run_carrier(carrier, by_carrier[carrier])
+
+            await asyncio.gather(run_parallel(), run_serial())
     finally:
         written = await writer.close()
 

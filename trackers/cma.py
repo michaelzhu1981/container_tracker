@@ -522,7 +522,7 @@ class CmaTracker(BaseTracker):
         self._search_submitted = False
         if await self._page_challenge_code():
             return
-        await self.dismiss_cookies()
+        await self.dismiss_cookies(wait_ms=0)
         await self.dismiss_session_timeout()
         field = None
         for selector in (

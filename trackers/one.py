@@ -16,6 +16,7 @@ from event_text import (
 from html_tables import parse_tables
 from models import CanonicalEvent, Classifier
 from ports import normalize_key
+from challenges import CHALLENGE_CODE_JS
 from trackers.base import BaseTracker, TrackerError
 
 TRACK_URL = "https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking"
@@ -330,7 +331,7 @@ class OneTracker(BaseTracker):
     async def dismiss_onboarding(self) -> None:
         skip = self.page.locator("button:has-text('Skip')")
         try:
-            if await skip.first.is_visible(timeout=1500):
+            if await skip.first.is_visible(timeout=300):
                 await skip.first.click(timeout=3_000)
                 await self.page.wait_for_timeout(300)
         except Exception:  # noqa: BLE001
@@ -343,7 +344,7 @@ class OneTracker(BaseTracker):
             "button:has-text('All')"
         )
         try:
-            if not await type_btn.first.is_visible(timeout=4_000):
+            if not await type_btn.first.is_visible(timeout=800):
                 return
             label = (await type_btn.first.inner_text()).strip().lower()
             if "container" in label:
@@ -364,7 +365,7 @@ class OneTracker(BaseTracker):
         await self.dismiss_onboarding()
 
     async def search(self, container: str) -> None:
-        await self.dismiss_cookies(wait_ms=4_000)
+        await self.dismiss_cookies(wait_ms=0)
         await self.dismiss_onboarding()
         await self._select_container_search()
         field = self.page.locator(
@@ -374,7 +375,7 @@ class OneTracker(BaseTracker):
             await field.first.wait_for(state="visible", timeout=12_000)
         except Exception as exc:  # noqa: BLE001
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
-            await self.dismiss_cookies(wait_ms=4_000)
+            await self.dismiss_cookies(wait_ms=0)
             await self.dismiss_onboarding()
             field = self.page.locator(
                 "input[placeholder*='Container' i], input[placeholder*='Search by' i]"
@@ -391,7 +392,7 @@ class OneTracker(BaseTracker):
         search = self.page.locator("button[class*='ContainerListFilters_button-search']")
         clicked = False
         try:
-            if await search.first.is_visible(timeout=2_000):
+            if await search.first.is_visible(timeout=800):
                 await search.first.click(timeout=8_000)
                 clicked = True
         except Exception:  # noqa: BLE001
@@ -407,7 +408,7 @@ class OneTracker(BaseTracker):
                 f"{TRACK_URL}?trakNoParam={quote(container)}&trakNoTpCdParam=C",
                 wait_until="domcontentloaded",
             )
-            await self.dismiss_cookies(wait_ms=4_000)
+            await self.dismiss_cookies(wait_ms=0)
             await self.dismiss_onboarding()
             await self._wait_for_results()
 
@@ -419,8 +420,8 @@ class OneTracker(BaseTracker):
                         const text = (document.body && document.body.innerText || "").toLowerCase();
                         return (
                             !!document.querySelector("table[class*='EventTable']") ||
-                            text.includes("total 0 result") ||
-                            text.includes("total 1 result") ||
+                            !!document.querySelector("[class*='CargoTrackingDetail']") ||
+                            /total\\s+\\d+\\s+result/.test(text) ||
                             text.includes("loaded on vessel")
                         );
                     }"""
@@ -435,16 +436,17 @@ class OneTracker(BaseTracker):
                 """() => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     return (
-                        text.includes("total 0 result") ||
+                        !!document.querySelector("table[class*='EventTable']") ||
+                        !!document.querySelector("[class*='CargoTrackingDetail']") ||
+                        /total\\s+\\d+\\s+result/.test(text) ||
                         text.includes("no result") ||
                         text.includes("not found") ||
-                        text.includes("loaded on vessel") ||
-                        text.includes("empty container") ||
-                        text.includes("gate in to outbound") ||
-                        !!document.querySelector("table[class*='EventTable']")
+                        text.includes("没有查询结果") ||
+                        text.includes("查无") ||
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
-                timeout=35_000,
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                timeout=20_000,
             )
         except Exception:  # noqa: BLE001
             pass

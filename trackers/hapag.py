@@ -286,7 +286,7 @@ class HapagTracker(BaseTracker):
         await self.dismiss_onboarding()
 
     async def search(self, container: str) -> None:
-        await self.dismiss_cookies()
+        await self.dismiss_cookies(wait_ms=0)
         await self.dismiss_onboarding()
         try:
             await self.page.evaluate(

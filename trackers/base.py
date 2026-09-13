@@ -23,6 +23,8 @@ from status_engine import evaluate
 
 LOGGER = logging.getLogger("container_tracker")
 
+COOKIE_BANNER_WAIT_MS = 800
+
 COOKIE_SELECTORS = (
     "#onetrust-pc-sdk #accept-recommended-btn-handler",
     "#accept-recommended-btn-handler",
@@ -178,13 +180,15 @@ class BaseTracker(ABC):
         self._html: Path | None = None
         self._human_wait_used = False
 
-    async def dismiss_cookies(self, wait_ms: int = 3000) -> None:
-        try:
-            await self.page.locator(
-                "#onetrust-pc-sdk, #onetrust-banner-sdk, #onetrust-accept-btn-handler"
-            ).first.wait_for(state="visible", timeout=wait_ms)
-        except Exception:  # noqa: BLE001
-            pass
+    async def dismiss_cookies(self, wait_ms: int = COOKIE_BANNER_WAIT_MS) -> None:
+        appear_ms = 0 if wait_ms <= 0 else min(wait_ms, COOKIE_BANNER_WAIT_MS)
+        if appear_ms:
+            try:
+                await self.page.locator(
+                    "#onetrust-pc-sdk, #onetrust-banner-sdk, #onetrust-accept-btn-handler"
+                ).first.wait_for(state="visible", timeout=appear_ms)
+            except Exception:  # noqa: BLE001
+                pass
         for _ in range(2):
             clicked = False
             for selector in COOKIE_SELECTORS:
@@ -345,7 +349,7 @@ class BaseTracker(ABC):
         if await self._page_challenge_code():
             await self.pass_or_wait_for_challenge()
             return
-        await self.dismiss_cookies()
+        await self.dismiss_cookies(wait_ms=0)
         dismiss_timeout = getattr(self, "dismiss_session_timeout", None)
         if callable(dismiss_timeout):
             try:
@@ -558,7 +562,7 @@ class BaseTracker(ABC):
             if not session_ready:
                 await self.open_page()
                 if not await self._page_challenge_code():
-                    await self.dismiss_cookies()
+                    await self.dismiss_cookies(wait_ms=0)
             await self.pass_or_wait_for_challenge()
             searched_page = self.page
             await self.search(container)

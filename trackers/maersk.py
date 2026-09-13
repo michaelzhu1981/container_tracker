@@ -351,13 +351,13 @@ class MaerskTracker(BaseTracker):
         self._clear_captured_json()
         if await self._page_challenge_code():
             return
-        await self.dismiss_cookies()
+        await self.dismiss_cookies(wait_ms=0)
         field = await self._find_search_field()
         if field is None:
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             if await self._page_challenge_code():
                 return
-            await self.dismiss_cookies()
+            await self.dismiss_cookies(wait_ms=0)
             field = await self._find_search_field()
         if field is None:
             raise TrackerError("Could not find the container search field.", "SELECTOR")

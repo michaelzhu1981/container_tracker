@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from trackers.base import (
+    COOKIE_BANNER_WAIT_MS,
     BaseTracker,
     TrackerError,
     challenge_code,
@@ -200,6 +201,29 @@ class DummyTracker(BaseTracker):
 
     async def parse_events(self):
         return []
+
+
+@pytest.mark.asyncio
+async def test_dismiss_cookies_caps_banner_wait():
+    seen: list[float] = []
+
+    class Page(FakePage):
+        def locator(self, selector):
+            class Loc(_Invisible):
+                @property
+                def first(self):
+                    return self
+
+                async def wait_for(self, **kwargs):
+                    seen.append(kwargs.get("timeout", 0))
+                    raise TimeoutError("not visible")
+
+            return Loc()
+
+    tracker = DummyTracker(Page(text="ok"))
+    await tracker.dismiss_cookies(wait_ms=20_000)
+    assert seen == [COOKIE_BANNER_WAIT_MS]
+    assert COOKIE_BANNER_WAIT_MS <= 800
 
 
 @pytest.mark.asyncio

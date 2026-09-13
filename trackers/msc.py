@@ -325,7 +325,7 @@ class MscTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=12_000)
 
     async def search(self, container: str) -> None:
-        await self.dismiss_cookies(wait_ms=4_000)
+        await self.dismiss_cookies(wait_ms=0)
         radio = self.page.locator("#containeradio")
         try:
             if await radio.first.is_visible(timeout=2_000):

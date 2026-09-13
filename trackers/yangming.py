@@ -14,6 +14,7 @@ from event_text import (
 from html_tables import parse_tables
 from models import CanonicalEvent, Classifier
 from ports import normalize_key
+from challenges import CHALLENGE_CODE_JS
 from trackers.base import BaseTracker, TrackerError
 
 TRACK_URL = "https://www.yangming.com/en/esolution/tracking/cargo_tracking"
@@ -141,13 +142,13 @@ class YangMingTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=20_000)
 
     async def search(self, container: str) -> None:
-        await self.dismiss_cookies(wait_ms=8_000)
+        await self.dismiss_cookies(wait_ms=0)
         field = self.page.get_by_role("textbox").first
         try:
             await field.wait_for(state="visible", timeout=10_000)
         except Exception as exc:  # noqa: BLE001
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
-            await self.dismiss_cookies(wait_ms=8_000)
+            await self.dismiss_cookies(wait_ms=0)
             field = self.page.get_by_role("textbox").first
             try:
                 await field.wait_for(state="visible", timeout=10_000)
@@ -176,15 +177,18 @@ class YangMingTracker(BaseTracker):
         try:
             await self.page.wait_for_function(
                 """() => {
-                    const text = document.body.innerText.toLowerCase();
+                    if (document.querySelector("table[aria-label*='ontainer' i]")) return true;
+                    if (document.querySelector("table tbody tr")) return true;
+                    const text = (document.body && document.body.innerText || "").toLowerCase();
                     return (
                         text.includes("can't identify") ||
-                        text.includes("can’t identify") ||
-                        text.includes("container status") ||
-                        text.includes("current status")
+                        text.includes("cannot identify") ||
+                        text.includes("无法识别") ||
+                        text.includes("查无") ||
+                        (DETECT_CHALLENGE)()
                     );
-                }""",
-                timeout=30_000,
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                timeout=8_000 if submitted else 20_000,
             )
         except Exception:  # noqa: BLE001
             pass
