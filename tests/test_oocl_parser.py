@@ -8,9 +8,12 @@ from trackers.oocl import (
     OoclTracker,
     _SEARCH_FIELD_SELECTORS,
     _SUBMIT_BUTTON_SELECTORS,
+    _SUBMIT_SEARCH_JS,
     is_oocl_entry_url,
     is_oocl_site_error_page,
+    oocl_popup_url,
     parse_oocl_html,
+    submit_popup_url,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "oocl"
@@ -100,6 +103,15 @@ def test_site_404_is_navigation_not_container_miss():
 def test_search_clicks_cargo_tracking_button():
     assert "#container_btn" in _SUBMIT_BUTTON_SELECTORS
     assert "#SEARCH_NUMBER" not in _SUBMIT_BUTTON_SELECTORS
+    assert "ListeningCargoTrackingBtn" in _SUBMIT_SEARCH_JS
+    assert "container_btn" in _SUBMIT_SEARCH_JS
+    assert "window.open" in _SUBMIT_SEARCH_JS
+    assert "cargotracking/Pages/ExpressLink" not in oocl_popup_url("TCNU1971808")
+    assert "Pages/ExpressLink.aspx" in oocl_popup_url("TCNU1971808")
+    assert submit_popup_url({"popupUrl": "https://www.oocl.com/result"}) == (
+        "https://www.oocl.com/result"
+    )
+    assert submit_popup_url(True) == ""
 
 
 def test_oocl_uses_system_chrome_like_cmdu():
@@ -189,6 +201,88 @@ async def test_search_does_not_open_removed_express_link():
 
     await OoclTracker(Page()).search("TCNU1971808")
     assert not any("ExpressLink" in url for url in gotos)
+
+
+@pytest.mark.asyncio
+async def test_search_submits_official_search_after_fill():
+    submitted: list[str] = []
+    clicks: list[str] = []
+    opened: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "#SEARCH_NUMBER" in self.selector or "#container_btn" in self.selector
+
+        async def click(self, **kwargs):
+            clicks.append(self.selector)
+
+        async def fill(self, value):
+            return None
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def scroll_into_view_if_needed(self):
+            return None
+
+        async def inner_text(self):
+            return "Container #"
+
+        async def select_option(self, **kwargs):
+            return None
+
+    class Keyboard:
+        async def press(self, key):
+            return None
+
+    class Page:
+        def __init__(self):
+            self.keyboard = Keyboard()
+            self.url = (
+                "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
+                "Pages/cargotracking.aspx"
+            )
+
+        async def goto(self, url, **kwargs):
+            return None
+
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def evaluate(self, script, arg=None):
+            if arg == "TCNU1971808" and "ListeningCargoTrackingBtn" in str(script):
+                submitted.append(arg)
+                return {
+                    "submitted": True,
+                    "popupUrl": (
+                        "https://www.oocl.com/Pages/ExpressLink.aspx?"
+                        "eltype=ct&businessType=containerNumber"
+                        "&businessNumber=TCNU1971808&language=en"
+                    ),
+                }
+            return ""
+
+        async def open_tab(self, url):
+            opened.append(url)
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    await OoclTracker(Page()).search("TCNU1971808")
+    assert submitted == ["TCNU1971808"]
+    assert opened == [
+        "https://www.oocl.com/Pages/ExpressLink.aspx?"
+        "eltype=ct&businessType=containerNumber"
+        "&businessNumber=TCNU1971808&language=en"
+    ]
+    assert "#container_btn" not in clicks
 
 
 @pytest.mark.asyncio

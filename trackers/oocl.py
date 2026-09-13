@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import quote
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -23,6 +24,10 @@ from trackers.base import COOKIE_BANNER_WAIT_MS, BaseTracker, TrackerError, look
 TRACK_URL = (
     "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
     "Pages/cargotracking.aspx"
+)
+RESULT_POPUP = (
+    "https://www.oocl.com/Pages/ExpressLink.aspx?eltype=ct"
+    "&businessType=containerNumber&businessNumber={number}&language=en"
 )
 
 _HEADER_HINTS = {
@@ -63,6 +68,60 @@ _SUBMIT_BUTTON_SELECTORS = (
 _ENTRY_URL_MARKERS = ("cargotracking.aspx",)
 _RESULT_HOSTS = ("oocl.com", "cargosmart.com")
 _BLANK_URLS = ("", "about:blank", "chrome://newtab")
+_SUBMIT_SEARCH_JS = """(container) => {
+    if (typeof allowAllCookiePolicy === "function") {
+        try { allowAllCookiePolicy(); } catch (err) {}
+    }
+    const field = document.getElementById("SEARCH_NUMBER");
+    if (field) {
+        field.focus();
+        const proto = window.HTMLInputElement && HTMLInputElement.prototype;
+        const desc = proto && Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc && desc.set) desc.set.call(field, container);
+        else field.value = container;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const type = document.getElementById("searchType");
+    if (type) type.value = "cont";
+    const select = document.getElementById("ooclCargoSelector");
+    if (select) select.value = "cont";
+    if (window.jQuery) {
+        window.jQuery("#ooclCargoSelector").val("cont");
+        if (window.jQuery.fn && window.jQuery.fn.selectpicker) {
+            window.jQuery("#ooclCargoSelector").selectpicker("refresh");
+        }
+        if (field) window.jQuery("#SEARCH_NUMBER").val(container);
+    }
+    if (typeof changeTrackingType === "function") {
+        try { changeTrackingType(); } catch (err) {}
+    }
+    if (typeof CookieModeSwitches === "function" && CookieModeSwitches() === "no") {
+        if (typeof allowAllCookiePolicy === "function") {
+            try { allowAllCookiePolicy(); } catch (err) {}
+        }
+    }
+    let popupUrl = "";
+    const nativeOpen = window.open;
+    window.open = function(url) {
+        popupUrl = String(url || "");
+        return null;
+    };
+    try {
+        if (typeof ListeningCargoTrackingBtn === "function") {
+            ListeningCargoTrackingBtn();
+        } else {
+            const btn = document.getElementById("container_btn");
+            if (btn) {
+                btn.scrollIntoView({ block: "center", inline: "nearest" });
+                btn.click();
+            }
+        }
+    } finally {
+        window.open = nativeOpen;
+    }
+    return { submitted: true, popupUrl: popupUrl || null };
+}"""
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -208,6 +267,20 @@ def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
         if events:
             break
     return events
+
+
+def oocl_popup_url(container: str) -> str:
+    """Official Search opens this URL via window.open; Chrome blocks scripted popups."""
+    return RESULT_POPUP.format(number=quote(container))
+
+
+def submit_popup_url(payload: object) -> str:
+    if isinstance(payload, dict):
+        url = payload.get("popupUrl") or payload.get("url") or ""
+        return str(url)
+    if isinstance(payload, str) and payload.startswith("http"):
+        return payload
+    return ""
 
 
 def is_oocl_entry_url(url: str) -> bool:
@@ -406,10 +479,38 @@ class OoclTracker(BaseTracker):
         await field.first.fill("")
         await field.first.fill(container)
         before = await self._tab_urls()
-        await self._click_search_button()
+        await self._submit_container_search(container)
         await self._adopt_result_tab(before)
         self._search_submitted = True
         await self._wait_for_results()
+
+    async def _submit_container_search(self, container: str) -> None:
+        payload = None
+        try:
+            payload = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
+        except Exception:  # noqa: BLE001
+            payload = None
+        popup = submit_popup_url(payload)
+        if not popup:
+            await self._click_search_button()
+            popup = oocl_popup_url(container)
+        await self._open_result_url(popup)
+
+    async def _open_result_url(self, url: str) -> None:
+        if not url:
+            return
+        opener = getattr(self.page, "open_tab", None)
+        if callable(opener):
+            await opener(url)
+            self._result_urls.append(url)
+            return
+        context = getattr(self.page, "context", None)
+        new_page = getattr(context, "new_page", None)
+        if callable(new_page):
+            extra = await new_page()
+            await extra.goto(url, wait_until="domcontentloaded")
+            self.page = extra
+            self._result_urls.append(url)
 
     async def _click_search_button(self) -> None:
         for selector in _SUBMIT_BUTTON_SELECTORS:

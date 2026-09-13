@@ -80,10 +80,26 @@ def run_osascript(source: str) -> str:
 
 def open_chrome_window(url: str) -> None:
     subprocess.Popen(
-        ["open", "-na", "Google Chrome", "--args", "--new-window", url],
+        ["open", "-na", "Google Chrome", "--args", "--disable-popup-blocking", "--new-window", url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def open_chrome_tab(url: str) -> None:
+    target = json.dumps(url)
+    source = f"""
+    tell application "Google Chrome"
+        activate
+        if (count of windows) is 0 then
+            make new window
+        end if
+        tell front window
+            make new tab with properties {{URL:{target}}}
+        end tell
+    end tell
+    """
+    run_osascript(source)
 
 
 def _tab_match_clause(*, host: str, tab_url: str | None = None) -> str:
@@ -625,7 +641,13 @@ class SystemLocator:
         await self.page.evaluate(
             f"""() => {{
                 const el = {_find_element_js(self.selector)};
-                if (el) el.click();
+                if (!el) return;
+                el.scrollIntoView({{ block: "center", inline: "nearest" }});
+                el.focus();
+                for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {{
+                    el.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+                }}
+                if (typeof el.click === "function") el.click();
             }}"""
         )
 
@@ -816,6 +838,11 @@ class SystemChromePage:
 
     async def list_tab_urls(self) -> list[str]:
         return await asyncio.to_thread(list_chrome_tab_urls)
+
+    async def open_tab(self, url: str) -> None:
+        await asyncio.to_thread(open_chrome_tab, url)
+        self.tab_url = url
+        await asyncio.to_thread(activate_chrome_tab, url)
 
     async def focus_tab(self, url: str) -> None:
         self.tab_url = url

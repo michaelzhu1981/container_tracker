@@ -15,6 +15,7 @@ from system_chrome import (
     chrome_js,
     close_chrome_tabs,
     list_chrome_tab_urls,
+    open_chrome_tab,
     write_png_data_url,
 )
 
@@ -81,6 +82,19 @@ def test_chrome_js_can_target_a_specific_tab(monkeypatch):
     monkeypatch.setattr("system_chrome.run_osascript", fake)
     assert chrome_js("() => 1", host="oocl.com", tab_url="https://www.oocl.com/result") == "ok"
     assert "www.oocl.com/result" in seen[0]
+
+
+def test_open_chrome_tab_uses_front_window(monkeypatch):
+    seen: list[str] = []
+
+    def fake(source: str) -> str:
+        seen.append(source)
+        return "true"
+
+    monkeypatch.setattr("system_chrome.run_osascript", fake)
+    open_chrome_tab("https://www.oocl.com/Pages/ExpressLink.aspx?n=1")
+    assert "make new tab" in seen[0]
+    assert "www.oocl.com/Pages/ExpressLink.aspx" in seen[0]
 
 
 def test_close_chrome_tabs_keeps_entry_url(monkeypatch):
