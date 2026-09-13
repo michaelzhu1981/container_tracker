@@ -273,16 +273,7 @@ class HapagTracker(BaseTracker):
             pass
 
     async def open_page(self) -> None:
-        current = (self.page.url or "").lower()
-        if "hapag-lloyd.com" in current and "cdn-cgi" not in current:
-            text = await self._visible_text()
-            if not challenge_code(text):
-                await self.dismiss_cookies()
-                await self.dismiss_onboarding()
-                return
-        await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
-        landing = await self._visible_text()
-        if challenge_code(landing):
+        if not await self.open_tracking_or_reuse("hapag-lloyd.com"):
             return
         await self.dismiss_cookies(wait_ms=8_000)
         html = await self.page.content()

@@ -500,7 +500,7 @@ Output: output/containers_result.xlsx
 ### 5.5 config.py
 
 - 全局 timeout
-- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU）5–8 秒
+- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU）5–8 秒
 - Cloudflare 自动等待 `AUTO_CHALLENGE_WAIT_MS`（约 25s），人工兜底 `CHALLENGE_WAIT_MS`（180s）
 - 挑战未过：刷新 tracking URL 最多 2 次，间隔 5s / 15s
 - locale `en-US`
@@ -515,11 +515,11 @@ Output: output/containers_result.xlsx
 ### 6.1 运行方式
 
 - 一个 Browser；读入先按 `Container+Carrier` 去重，再 `groupby("Carrier")` 后**顺序**查询；不并发
-- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU、MSCU）默认 headed + 持久资料目录
+- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU）默认 headed + 持久资料目录
 - Cookie Banner 用选择器自动关
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
-- 流程：打开 Tracking 页 → 自动等待 JS 挑战 → 关 Cookie → 输入箱号
-- CAPTCHA / Cloudflare：先在同一页短等 JS 挑战。仍在挑战页则**交给系统 Chrome**（同一 `user_data_dir`）：人点完并关掉该窗口后再接回（有终端时也可按 Enter）。无 TTY 时等该资料目录上的 Chrome 退出，避免 `input()` EOF 连败。不要在 Playwright 窗口里点勾。`--no-wait-challenge` 才刷新重试或不等人。不打码、不伪造 token
+- 流程：打开 Tracking 页（已在该站且无挑战则复用）→ 自动等待 JS 挑战 → 关 Cookie → 用页面表单输入箱号。CMDU / MAEU 与 HLCU 相同，不用 GET search / 箱号深链
+- CAPTCHA / Cloudflare / DataDome / Akamai：先在同一页短等 JS 挑战。自动等待若误判通过但页仍被拦，或仍在挑战页，则**交给系统 Chrome**（同一 `user_data_dir`）：人点完并关掉该窗口后再接回（有终端时也可按 Enter）。无 TTY 时等该资料目录上的 Chrome 退出，避免 `input()` EOF 连败。不要在 Playwright 窗口里点勾。`--no-wait-challenge` 才刷新重试或不等人。不打码、不伪造 token
 - `--headed` 强制所有船公司可见窗口。查询结果页才截图（结果区域，不含登录/cookie）；Cloudflare 页只留 HTML。失败仍保存 `page.content()`
 
 不能承诺 6 家 100% 自动。Hapag 等站点的非交互挑战应尽量自动过；需要点击时同一 Chrome 资料目录等人点一次，后续箱复用。连续两箱 `SELECTOR` / `CLOUDFLARE` 停查该家。
@@ -601,9 +601,9 @@ container_tracker/
 | HLCU | [Track by container](https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html) | Cloudflare Managed Challenge（已实测） |
 | YMJA | [Cargo tracking](https://www.yangming.com/en/esolution/tracking/cargo_tracking) | 可能支持多箱；MVP 仍逐箱 |
 | ONEY | [ONE cargo tracking](https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking) | 旧版 ecomm 与新站并存；`oldest_first` |
-| MAEU | [maersk.com/tracking](https://www.maersk.com/tracking/) | 强反爬、动态渲染 |
+| MAEU | [maersk.com/tracking](https://www.maersk.com/tracking/) | 强反爬、动态渲染；与 HLCU 相同走表单+Chrome 交接；`oldest_first` |
 | MSCU | [Track a shipment](https://www.msc.com/en/track-a-shipment) | CAPTCHA、OneTrust、动态加载；`newest_first` |
-| CMDU | [CMA tracking](https://www.cma-cgm.com/eBusiness/Tracking) | 会话超时；还箱超过约 15 天可能无结果 |
+| CMDU | [CMA tracking](https://www.cma-cgm.com/ebusiness/tracking) | DataDome、会话超时；与 HLCU 相同走表单+Chrome 交接，不用 GET search；还箱超过约 15 天可能无结果；`oldest_first` |
 
 ### 8.1 HLCU 研究步骤（V0.1）
 
@@ -640,6 +640,31 @@ MSCU（时间线新→旧。没有 Vessel Departed 时，Actual **Export Loaded 
 | Import to consignee | ACT | GTOT | UNKNOWN | false |
 | Empty received at CY | ACT | GTIN | UNKNOWN | true |
 
+MAEU（时间线旧→新。页面由 `synergy/tracking` JSON 渲染；`Loaded` 不是开船，必须有 Actual Vessel Departed）：
+
+| 页面原文 | classifier | type | transport_mode | empty |
+|---|---|---|---|---|
+| Gate Out Empty | ACT | GTOT | UNKNOWN | true |
+| Gate In Full | ACT | GTIN | UNKNOWN | false |
+| Loaded | ACT | LOAD | VESSEL | — |
+| Vessel Departed | ACT | DEPA | VESSEL | — |
+| Vessel Arrived | ACT/EST | ARRI | VESSEL | — |
+| Discharged | ACT | DISC | VESSEL | — |
+| Gate Out Full | ACT | GTOT | UNKNOWN | false |
+| Empty Return | ACT | GTIN | UNKNOWN | true |
+
+CMDU（时间线旧→新。PastMoves / CurrentMoves 为 ACT，ProvisionalMoves 为 EST。**READY TO BE LOADED 不是装船**）：
+
+| 页面原文 | classifier | type | transport_mode | empty |
+|---|---|---|---|---|
+| EMPTY TO SHIPPER | ACT | GTOT | UNKNOWN | true |
+| READY TO BE LOADED | ACT | GTIN | UNKNOWN | — |
+| LOADED ON BOARD | ACT | LOAD | VESSEL | — |
+| VESSEL DEPARTURE | ACT | DEPA | VESSEL | — |
+| VESSEL ARRIVAL | ACT/EST | ARRI | VESSEL | — |
+| DISCHARGED / DISCHARGED IN TRANSHIPMENT | ACT | DISC | VESSEL | — |
+| EMPTY RETURN | ACT | GTIN | UNKNOWN | true |
+
 ---
 
 ## 9. 开发阶段
@@ -651,7 +676,7 @@ MSCU（时间线新→旧。没有 Vessel Departed 时，Actual **Export Loaded 
 | V0.1 | 脚手架 + 最新航次/status engine 单测 + HLCU 单箱 CLI（可用 `--headed`）+ 截图/HTML/日志 |
 | V0.2 | HLCU Excel 批量、groupby、整表增量写盘、基础 CLI |
 | V0.3 | YMJA + ONEY（ONEY 已接入） |
-| V0.4 | MAEU + MSCU + CMDU（MSCU 已接入） |
+| V0.4 | MAEU + MSCU + CMDU（三家均已接入） |
 | V0.5 | session 复用、失败重试 1 次、`--resume` / 跳过 SAILED、汇总统计 |
 | V1.0 | 6 家默认 headless 无人值守；英文 CLI 进度与汇总；README 使用说明可用中文 |
 

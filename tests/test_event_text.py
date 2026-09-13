@@ -15,6 +15,13 @@ def test_one_and_msc_event_types():
     assert classify_event_type("Empty received at CY") == "GTIN"
     assert classify_event_type("Vessel Arrival at Port of Discharge") == "ARRI"
     assert classify_event_type("Unloaded from Vessel at Port of Discharging") == "DISC"
+    assert classify_event_type("READY TO BE LOADED") == "GTIN"
+    assert classify_event_type("LOADED ON BOARD") == "LOAD"
+    assert classify_event_type("VESSEL DEPARTURE") == "DEPA"
+    assert classify_event_type("Gate In Full") == "GTIN"
+    assert classify_event_type("Gate Out Empty") == "GTOT"
+    assert classify_event_type("Vessel Departed") == "DEPA"
+    assert classify_event_type("Empty Return") == "GTIN"
 
 
 def test_parse_one_and_msc_dates():
@@ -24,3 +31,7 @@ def test_parse_one_and_msc_dates():
     assert (day, time) == ("2026-06-01", None)
     _, day, time = parse_timestamp("202607271544")
     assert (day, time) == ("2026-07-27", "15:44")
+    _, day, time = parse_timestamp("Thursday,10-SEP-2026 06:20 PM")
+    assert (day, time) == ("2026-09-10", "18:20")
+    _, day, time = parse_timestamp("11 Sep 2026, 03:40")
+    assert (day, time) == ("2026-09-11", "03:40")

@@ -32,6 +32,15 @@ _VESSEL_WORDS = ("vessel", "ship", "mv ", "m/v")
 _PLANNED = ("planned", "plan ", "schedule")
 _ESTIMATED = ("estimated", "estimate", "eta", "etd")
 
+_WEEKDAY_RE = re.compile(
+    r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*",
+    re.I,
+)
+_AMPM_TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP]M)\b", re.I)
+_AMPM_DATE_RE = re.compile(
+    r"\b(\d{1,2}[- ][A-Za-z]{3}[- ]\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)\b",
+    re.I,
+)
 _DATE_PATTERNS = [
     ("%Y-%m-%d %H:%M:%S", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\b")),
     ("%Y-%m-%d %H:%M", re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})\b")),
@@ -95,6 +104,8 @@ def classify_transport(text: str) -> TransportMode:
 
 def classify_event_type(text: str) -> EventType:
     blob = _lower(text)
+    if any(k in blob for k in ("ready to be loaded", "ready for loading")):
+        return "GTIN"
     if any(k in blob for k in ("vessel departed", "vessel departure", "sailed")):
         return "DEPA"
     if re.search(r"\bdeparted\b", blob) and "gate" not in blob:
@@ -160,9 +171,41 @@ def classify_classifier(text: str, is_actual: bool | None = None) -> Classifier:
     return "ACT"
 
 
+def _normalize_timestamp_text(text: str) -> str:
+    cleaned = _WEEKDAY_RE.sub("", text)
+    cleaned = re.sub(r"(\d{4}),\s*", r"\1 ", cleaned)
+    cleaned = _AMPM_TIME_RE.sub(
+        lambda match: f"{int(match.group(1)):02d}:{match.group(2)} {match.group(3).upper()}",
+        cleaned,
+    )
+    return cleaned
+
+
+def _hour_from_ampm(hour: int, meridian: str) -> int:
+    meridian = meridian.upper()
+    hour = hour % 12
+    if meridian == "PM":
+        hour += 12
+    return hour
+
+
 def parse_timestamp(text: str) -> tuple[str, str | None, str | None]:
     """Return (raw, event_date, event_time). Never invent 00:00."""
     raw = text.strip()
+    text = _normalize_timestamp_text(raw)
+    ampm = _AMPM_DATE_RE.search(text)
+    if ampm:
+        day_token = ampm.group(1).replace(" ", "-")
+        try:
+            parsed = datetime.strptime(
+                f"{day_token} {int(ampm.group(2)):02d}:{ampm.group(3)}",
+                "%d-%b-%Y %H:%M",
+            )
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            hour = _hour_from_ampm(int(ampm.group(2)), ampm.group(4))
+            return raw, parsed.strftime("%Y-%m-%d"), f"{hour:02d}:{ampm.group(3)}"
     iso = _ISO_TZ_RE.search(text)
     if iso:
         token = iso.group(1).replace("T", " ")

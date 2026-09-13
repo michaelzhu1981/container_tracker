@@ -28,6 +28,8 @@ COOKIE_SELECTORS = (
     "button:has-text('Agree')",
     "button:has-text('I agree')",
     "button:has-text('Allow all')",
+    "button:has-text('Allow All')",
+    "button.coi-banner__accept",
     "button:has-text('接受所有 Cookie')",
     "button:has-text('Accept All Cookies')",
     "button.onetrust-close-btn-handler",
@@ -69,6 +71,10 @@ _NO_RESULT_TOKENS = (
     "can't identify your input",
     "cannot identify your input",
     "can’t identify your input",
+    "cannot find any shipment",
+    "couldn't find any shipment",
+    "could not find any shipment",
+    "no shipments found",
 )
 
 _QUERY_PAGE_MARKERS = (
@@ -85,8 +91,12 @@ _QUERY_PAGE_MARKERS = (
     "vessel departure from",
     "export loaded",
     "empty to shipper",
+    "loaded on board",
+    "vessel departure",
+    "gate in full",
     "eventtable",
     "msc-flow-tracking__step",
+    "gridtrackingdetails",
     "total 1 result",
 )
 
@@ -127,14 +137,18 @@ _CHALLENGE_GONE_JS = """() => {
         text.includes("managed challenge") ||
         text.includes("verify you are human") ||
         text.includes("security check") ||
-        html.includes("cf-challenge")
+        text.includes("access denied") ||
+        html.includes("cf-challenge") ||
+        html.includes("captcha-delivery.com") ||
+        html.includes("datadome captcha") ||
+        html.includes("errors.edgesuite.net")
     );
     return !blocked;
 }"""
 
 
 def challenge_code(text: str) -> str | None:
-    """Return CLOUDFLARE, CAPTCHA, or None from visible page text."""
+    """Return CLOUDFLARE, CAPTCHA, or None from visible page text or HTML."""
     blob = text.lower()
     if (
         "checking your browser" in blob
@@ -142,9 +156,19 @@ def challenge_code(text: str) -> str | None:
         or "verify you are human" in blob
         or "security check" in blob
         or ("attention required" in blob and "cloudflare" in blob)
+        or "errors.edgesuite.net" in blob
+        or (
+            "access denied" in blob
+            and ("edgesuite" in blob or "akamai" in blob or "reference #" in blob)
+        )
     ):
         return "CLOUDFLARE"
-    if "recaptcha" in blob or "hcaptcha" in blob:
+    if (
+        "recaptcha" in blob
+        or "hcaptcha" in blob
+        or "captcha-delivery.com" in blob
+        or "datadome captcha" in blob
+    ):
         return "CAPTCHA"
     return None
 
@@ -228,15 +252,32 @@ class BaseTracker(ABC):
         except Exception:  # noqa: BLE001
             return False
 
-    async def _after_challenge_cleared(self) -> None:
+    async def _after_challenge_cleared(self) -> str | None:
         await self.page.wait_for_timeout(1000)
         await self.dismiss_cookies(wait_ms=5000)
-        still = challenge_code(await self._visible_text())
-        if still:
-            raise TrackerError(
-                f"Timed out waiting for the {still} check to clear.",
-                still,
-            )
+        return await self._page_challenge_code()
+
+    async def open_tracking_or_reuse(self, host: str) -> bool:
+        """Reuse the current tab when it is already on this carrier.
+
+        Returns False when a bot-check is showing so track() can wait or
+        hand the same profile to system Chrome, same as HLCU.
+        """
+        current = ""
+        try:
+            current = (self.page.url or "").lower()
+        except Exception:  # noqa: BLE001
+            current = ""
+        if host in current and "cdn-cgi" not in current:
+            if not await self._page_challenge_code():
+                return True
+        if not self.tracking_url:
+            return False
+        try:
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not open %s tracking page", self.carrier_code)
+        return not await self._page_challenge_code()
 
     async def _reload_tracking_page(self) -> None:
         if not self.tracking_url:
@@ -246,16 +287,28 @@ class BaseTracker(ABC):
         except Exception:  # noqa: BLE001
             LOGGER.info("Reload after challenge failed for %s", self.carrier_code)
 
+    async def _page_challenge_code(self) -> str | None:
+        text = await self._visible_text()
+        code = challenge_code(text)
+        if code:
+            return code
+        try:
+            return challenge_code(await self.page.content())
+        except Exception:  # noqa: BLE001
+            return None
+
     async def pass_or_wait_for_challenge(self) -> None:
-        code = challenge_code(await self._visible_text())
+        code = await self._page_challenge_code()
         if not code:
             return
 
         auto_s = AUTO_CHALLENGE_WAIT_MS // 1000
         LOGGER.info("Waiting up to %ss for %s to clear automatically", auto_s, code)
         if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
-            await self._after_challenge_cleared()
-            return
+            leftover = await self._after_challenge_cleared()
+            if not leftover:
+                return
+            code = leftover
 
         if self.wait_for_challenge:
             if self.browser is not None and hasattr(
@@ -265,8 +318,8 @@ class BaseTracker(ABC):
                 handed = await self.browser.hand_off_to_system_chrome(self.tracking_url)
                 if handed:
                     self.page = self.browser.page
-                    if not challenge_code(await self._visible_text()):
-                        await self._after_challenge_cleared()
+                    leftover = await self._after_challenge_cleared()
+                    if not leftover:
                         return
             else:
                 seconds = CHALLENGE_WAIT_MS // 1000
@@ -277,9 +330,10 @@ class BaseTracker(ABC):
                 )
                 LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
                 if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
-                    await self._after_challenge_cleared()
-                    return
-            still = challenge_code(await self._visible_text()) or code
+                    leftover = await self._after_challenge_cleared()
+                    if not leftover:
+                        return
+            still = await self._page_challenge_code() or code
             raise TrackerError(
                 f"Timed out waiting for the {still} check to clear.",
                 still,
@@ -290,10 +344,11 @@ class BaseTracker(ABC):
             await self.page.wait_for_timeout(int(delay * 1000))
             await self._reload_tracking_page()
             if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
-                await self._after_challenge_cleared()
-                return
+                leftover = await self._after_challenge_cleared()
+                if not leftover:
+                    return
 
-        still = challenge_code(await self._visible_text()) or code
+        still = await self._page_challenge_code() or code
         raise TrackerError(
             f"Timed out waiting for the {still} check to clear.",
             still,

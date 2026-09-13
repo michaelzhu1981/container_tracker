@@ -20,6 +20,18 @@ def test_cloudflare_visible_text():
 
 def test_captcha_visible_text():
     assert challenge_code("Please complete the hCaptcha") == "CAPTCHA"
+    assert challenge_code('<iframe src="https://geo.captcha-delivery.com/captcha/" title="DataDome CAPTCHA">') == "CAPTCHA"
+
+
+def test_datadome_sdk_script_is_not_a_challenge():
+    assert challenge_code("https://js.datadome.co/tags.js") is None
+
+
+def test_akamai_access_denied_is_cloudflare():
+    assert (
+        challenge_code("Access Denied\nerrors.edgesuite.net\nReference #18.123")
+        == "CLOUDFLARE"
+    )
 
 
 def test_normal_tracking_page_is_not_a_challenge():
@@ -55,6 +67,14 @@ def test_query_screenshot_keeps_tracking_results_only():
         "Export Loaded on Vessel\nEmpty to Shipper",
         '<div class="msc-flow-tracking__step"></div>',
     )
+    assert is_query_screenshot_page(
+        "LOADED ON BOARD\nVESSEL DEPARTURE",
+        '<div id="gridTrackingDetails"></div>',
+    )
+    assert is_query_screenshot_page(
+        "Gate In Full\nVessel Departed",
+        "<table><tr><td>Loaded</td></tr></table>",
+    )
     assert not is_query_screenshot_page(
         "checking your browser\nVerify you are human",
         "<html>Security Check</html>",
@@ -89,6 +109,7 @@ class FakePage:
         self.succeed_on_call = succeed_on_call
         self.calls = 0
         self.gotos: list[str] = []
+        self.url = ""
 
     async def evaluate(self, script):
         return self.text
@@ -99,11 +120,18 @@ class FakePage:
     def locator(self, selector):
         return _Invisible()
 
+    def get_by_role(self, role):
+        return _Invisible()
+
+    def on(self, event, handler):
+        return None
+
     async def wait_for_timeout(self, ms):
         return None
 
     async def goto(self, url, wait_until=None):
         self.gotos.append(url)
+        self.url = url
 
     async def wait_for_function(self, script, timeout=0):
         self.calls += 1
@@ -162,6 +190,38 @@ class _HandoffBrowser:
         return True
 
 
+def test_auto_wait_false_success_still_hands_off(monkeypatch):
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
+    page = FakePage(text="verify you are human")
+
+    async def pretend_gone(script, timeout=0):
+        page.calls += 1
+        return True
+
+    page.wait_for_function = pretend_gone  # type: ignore[method-assign]
+    browser = _HandoffBrowser(page)
+    tracker = DummyTracker(page, wait_for_challenge=True, browser=browser)
+    asyncio.run(tracker.pass_or_wait_for_challenge())
+    assert browser.handed is True
+    assert challenge_code(page.text) is None
+
+
+def test_open_tracking_reuses_existing_carrier_tab():
+    page = FakePage(text="Search\nContainer No.")
+    page.url = "https://www.cma-cgm.com/ebusiness/tracking"
+    tracker = DummyTracker(page)
+    tracker.tracking_url = "https://www.cma-cgm.com/ebusiness/tracking"
+    assert asyncio.run(tracker.open_tracking_or_reuse("cma-cgm.com")) is True
+    assert page.gotos == []
+
+
+def test_open_tracking_stops_when_landing_is_challenged():
+    page = FakePage(text="verify you are human")
+    tracker = DummyTracker(page)
+    assert asyncio.run(tracker.open_tracking_or_reuse("maersk.com")) is False
+    assert page.gotos == [DummyTracker.tracking_url]
+
+
 def test_human_handoff_opens_system_chrome_instead_of_clicking_widget(monkeypatch):
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
     page = FakePage(text="verify you are human")
@@ -204,3 +264,28 @@ def test_no_human_fallback_raises_after_auto_fails(monkeypatch):
     with pytest.raises(TrackerError) as exc:
         asyncio.run(tracker.pass_or_wait_for_challenge())
     assert exc.value.code == "CLOUDFLARE"
+
+
+def test_cma_search_does_not_use_get_url():
+    from trackers.cma import CmaTracker
+
+    page = FakePage(text="Search")
+    page.url = "https://www.cma-cgm.com/ebusiness/tracking"
+    tracker = CmaTracker(page)
+    with pytest.raises(TrackerError) as exc:
+        asyncio.run(tracker.search("CMAU1234567"))
+    assert exc.value.code == "SELECTOR"
+    assert all("tracking/search" not in url for url in page.gotos)
+
+
+def test_maersk_search_does_not_deeplink_container():
+    from trackers.maersk import TRACK_URL, MaerskTracker
+
+    page = FakePage(text="Search")
+    page.url = "https://www.maersk.com/tracking/"
+    tracker = MaerskTracker(page)
+    with pytest.raises(TrackerError) as exc:
+        asyncio.run(tracker.search("HASU4566923"))
+    assert exc.value.code == "SELECTOR"
+    assert all("HASU4566923" not in url for url in page.gotos)
+    assert page.gotos == [TRACK_URL]

@@ -12,10 +12,10 @@
 | `YMJA` | Yang Ming | 已实现；默认无头 |
 | `ONEY` | ONE | 已实现；默认无头 |
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
-| `MAEU` | Maersk | 尚未实现，记 `SELECTOR` |
-| `CMDU` | CMA CGM | 尚未实现，记 `SELECTOR` |
+| `MAEU` | Maersk | 已实现；与 HLCU 相同：复用 Tracking 页、表单查询、挑战交给系统 Chrome |
+| `CMDU` | CMA CGM | 已实现；与 HLCU 相同：复用 Tracking 页、表单查询、挑战交给系统 Chrome。还箱超过约 15 天可能无结果 |
 
-每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU 无头会被 Akamai 拒绝，因此这两家默认 headed。
+每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU 无头更容易被拦，因此这四家默认 headed。
 
 ## 安装
 
@@ -49,7 +49,7 @@ python app.py --serve
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
 - **Wait for challenge**：自动等待失败后，把挑战交给本机 Chrome（默认开）。关掉则自动失败并可能熔断该家
-- **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU 仍会开 Chrome
+- **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
@@ -57,13 +57,15 @@ python app.py --serve
 
 ## 命令行
 
-单箱（目前实现 HLCU / YMJA / ONEY / MSCU）：
+单箱（6 家均已实现）：
 
 ```bash
 python app.py --carrier HLCU --container HLXU1234567
 python app.py --carrier YMJA --container YMLU1234567
 python app.py --carrier ONEY --container ONEU1234567
 python app.py --carrier MSCU --container MSCU1234567
+python app.py --carrier MAEU --container MSKU1234567
+python app.py --carrier CMDU --container CMAU1234567
 python app.py --carrier HLCU --container HLXU1234567 --headed
 ```
 
@@ -118,7 +120,7 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 5. 不要在自动窗口里点勾，那里经常点了也不过
 6. `--no-wait-challenge`：不等人，自动失败后记 `CLOUDFLARE`
 
-HLCU / MSCU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。无人值守：
+HLCU / MSCU / MAEU / CMDU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。CMDU / MAEU 不再走 GET search 或箱号深链（更容易再次触发 DataDome / Akamai）。无人值守：
 
 ```bash
 python app.py input/containers.xlsx --no-wait-challenge
