@@ -267,7 +267,7 @@
         <div id="optTip" class="opt-tip" hidden></div>
       </div>
       <div class="controls" style="margin-top:10px">
-        <span class="sub has-tip" data-tip="Choose which carriers to query when you start a job. A summary row colors that carrier here; the others stay on the page background. All selected or none selected queries every carrier.">Carriers</span>
+        <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected or none selected queries every carrier.">Carriers</span>
         <div id="carrierChips" class="carriers"></div>
       </div>
     </div>
@@ -405,7 +405,7 @@
     }
 
     function selectedCarriers() {
-      const on = chipsBeforeFocus || chipOnCodes();
+      const on = chipOnCodes();
       if (!on.length || on.length === knownCarriers.length) return null;
       return on;
     }
@@ -586,6 +586,11 @@
             prevOn.length < knownCarriers.length;
           knownCarriers = incoming;
           renderChips(incoming, keepSelection);
+          if (carrierFilter) {
+            chipsEl.querySelectorAll(".chip").forEach((el) => {
+              el.classList.toggle("on", el.dataset.carrier === carrierFilter);
+            });
+          }
         }
       }
 
@@ -597,7 +602,6 @@
       ].join("");
 
       renderDash(data.rows || [], data.carriers || knownCarriers, data.carrier_times || {});
-      syncChipColors();
 
       const rows = (data.rows || []).filter((row) => {
         if (filter === "ALL") return true;
@@ -711,6 +715,7 @@
       const row = event.target.closest("[data-carrier]");
       if (!row) return;
       carrierFilter = carrierFilter === row.dataset.carrier ? "" : row.dataset.carrier;
+      syncChipColors();
       refresh();
     });
     dashEl.addEventListener("click", (event) => {
@@ -748,6 +753,10 @@
       const chip = event.target.closest(".chip");
       if (!chip) return;
       chip.classList.toggle("on");
+      chipsBeforeFocus = null;
+      const on = chipOnCodes();
+      carrierFilter = on.length === 1 ? on[0] : "";
+      refresh();
     });
 
     const optTip = document.getElementById("optTip");
