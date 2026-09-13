@@ -94,7 +94,20 @@ def open_chrome_tab(url: str) -> None:
         if (count of windows) is 0 then
             make new window
         end if
-        tell front window
+        set dest to missing value
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    if URL of t contains "cargotracking.aspx" then
+                        set dest to w
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if dest is not missing value then exit repeat
+        end repeat
+        if dest is missing value then set dest to front window
+        tell dest
             make new tab with properties {{URL:{target}}}
         end tell
     end tell

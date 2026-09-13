@@ -249,6 +249,7 @@ def test_search_clicks_cargo_tracking_button():
     assert "ListeningCargoTrackingBtn" in _SUBMIT_SEARCH_JS
     assert "container_btn" in _SUBMIT_SEARCH_JS
     assert "window.open" in _SUBMIT_SEARCH_JS
+    assert "nativeOpen" not in _SUBMIT_SEARCH_JS
     assert "cargotracking/Pages/ExpressLink" not in oocl_popup_url("TCNU1971808")
     assert "Pages/ExpressLink.aspx" in oocl_popup_url("TCNU1971808")
     assert submit_popup_url({"popupUrl": "https://www.oocl.com/result"}) == (
@@ -426,6 +427,82 @@ async def test_search_submits_official_search_after_fill():
         "&businessNumber=TCNU1971808&language=en"
     ]
     assert "#container_btn" not in clicks
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_open_another_tab_when_result_already_exists():
+    opened: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "#SEARCH_NUMBER" in self.selector
+
+        async def click(self, **kwargs):
+            return None
+
+        async def fill(self, value):
+            return None
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def scroll_into_view_if_needed(self):
+            return None
+
+        async def inner_text(self):
+            return "Container #"
+
+        async def select_option(self, **kwargs):
+            return None
+
+    class Page:
+        def __init__(self):
+            self.url = (
+                "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
+                "Pages/cargotracking.aspx"
+            )
+            self.tabs = [self.url]
+            self.tab_url = self.url
+
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def evaluate(self, script, arg=None):
+            if arg == "TCNU1971808" and "ListeningCargoTrackingBtn" in str(script):
+                self.tabs.append(
+                    "https://www.oocl.com/Pages/ExpressLink.aspx?"
+                    "eltype=ct&businessType=containerNumber"
+                    "&businessNumber=TCNU1971808&language=en"
+                )
+                return {
+                    "submitted": True,
+                    "popupUrl": self.tabs[-1],
+                }
+            return ""
+
+        async def list_tab_urls(self):
+            return list(self.tabs)
+
+        async def focus_tab(self, url):
+            self.url = url
+            self.tab_url = url
+
+        async def open_tab(self, url):
+            opened.append(url)
+            self.tabs.append(url)
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    await OoclTracker(Page()).search("TCNU1971808")
+    assert opened == []
 
 
 @pytest.mark.asyncio

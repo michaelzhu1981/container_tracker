@@ -94,6 +94,7 @@ def test_open_chrome_tab_uses_front_window(monkeypatch):
     monkeypatch.setattr("system_chrome.run_osascript", fake)
     open_chrome_tab("https://www.oocl.com/Pages/ExpressLink.aspx?n=1")
     assert "make new tab" in seen[0]
+    assert "cargotracking.aspx" in seen[0]
     assert "www.oocl.com/Pages/ExpressLink.aspx" in seen[0]
 
 

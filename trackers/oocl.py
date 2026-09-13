@@ -172,23 +172,18 @@ _SUBMIT_SEARCH_JS = """(container) => {
         }
     }
     let popupUrl = "";
-    const nativeOpen = window.open;
     window.open = function(url) {
         popupUrl = String(url || "");
         return null;
     };
-    try {
-        if (typeof ListeningCargoTrackingBtn === "function") {
-            ListeningCargoTrackingBtn();
-        } else {
-            const btn = document.getElementById("container_btn");
-            if (btn) {
-                btn.scrollIntoView({ block: "center", inline: "nearest" });
-                btn.click();
-            }
+    if (typeof ListeningCargoTrackingBtn === "function") {
+        ListeningCargoTrackingBtn();
+    } else {
+        const btn = document.getElementById("container_btn");
+        if (btn) {
+            btn.scrollIntoView({ block: "center", inline: "nearest" });
+            btn.click();
         }
-    } finally {
-        window.open = nativeOpen;
     }
     return { submitted: true, popupUrl: popupUrl || null };
 }"""
@@ -624,6 +619,7 @@ class OoclTracker(BaseTracker):
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
+        await self._pin_entry_tab()
         before = await self._tab_urls()
         await self._submit_container_search(container)
         await self._adopt_result_tab(before)
@@ -631,20 +627,47 @@ class OoclTracker(BaseTracker):
         await self._wait_for_results()
         await self.expand_result_details()
 
+    async def _pin_entry_tab(self) -> None:
+        focus = getattr(self.page, "focus_tab", None)
+        if not callable(focus) and not hasattr(self.page, "tab_url"):
+            return
+        for url in await self._tab_urls():
+            if not is_oocl_entry_url(url):
+                continue
+            if hasattr(self.page, "tab_url"):
+                self.page.tab_url = url
+            if callable(focus):
+                await focus(url)
+            return
+
+    async def _result_already_open(self, before: list[str]) -> bool:
+        prior = {url for url in before if not _is_blank_url(url)}
+        return await self._focus_new_result(prior)
+
     async def _submit_container_search(self, container: str) -> None:
+        before = await self._tab_urls()
         payload = None
         try:
             payload = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
         except Exception:  # noqa: BLE001
             payload = None
+        if await self._result_already_open(before):
+            return
         popup = submit_popup_url(payload)
         if not popup:
             await self._click_search_button()
+            if await self._result_already_open(before):
+                return
             popup = oocl_popup_url(container)
+        if await self._result_already_open(before):
+            return
         await self._open_result_url(popup)
 
     async def _open_result_url(self, url: str) -> None:
         if not url:
+            return
+        existing = await self._tab_urls()
+        if any(url.split("?")[0] in item or item in url for item in existing):
             return
         opener = getattr(self.page, "open_tab", None)
         if callable(opener):
