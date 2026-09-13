@@ -215,6 +215,9 @@
     .dash .pct { min-width: 3ch; color: var(--muted); }
     .dash .mini { display: block; height: 3px; width: 72px; background: var(--line); }
     .dash .mini > i { display: block; height: 100%; background: var(--accent); }
+    .dash th.time, .dash td.time { text-align: right; }
+    .dash .elapsed { display: block; }
+    .dash .avg { display: block; font-size: 10px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -242,7 +245,7 @@
       </div>
     </div>
     <div id="dash" class="dash" hidden>
-      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Click a row to filter the table; click again to show all carriers.">Summary by carrier</div>
+      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to filter the table; click again to show all carriers.">Summary by carrier</div>
       <table>
         <thead>
           <tr>
@@ -257,6 +260,7 @@
             <th>Manual</th>
             <th>Failed</th>
             <th class="bar">Progress</th>
+            <th class="time has-tip" data-tip="Total time this carrier spent querying in the current job, and the average time per queried container.">Time</th>
           </tr>
         </thead>
         <tbody id="dashRows"></tbody>
@@ -378,6 +382,23 @@
       return `<td class="${n ? "" : "zero"}">${n}</td>`;
     }
 
+    function formatDuration(ms) {
+      if (ms == null || Number.isNaN(ms)) return "—";
+      const total = Math.max(0, Math.round(Number(ms) / 1000));
+      if (total < 60) return `${total}s`;
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = total % 60;
+      if (!hours) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+      if (!minutes) return `${hours}h`;
+      return seconds ? `${hours}h ${minutes}m ${seconds}s` : `${hours}h ${minutes}m`;
+    }
+
+    function timeCell(timing) {
+      if (!timing || !timing.queried) return `<td class="time zero">—</td>`;
+      return `<td class="time"><span class="elapsed">${formatDuration(timing.total_ms)}</span><span class="avg">avg ${formatDuration(timing.avg_ms)}</span></td>`;
+    }
+
     function carrierSummary(rows, order) {
       const by = new Map();
       for (const row of rows) {
@@ -404,7 +425,7 @@
       return codes.map((code) => by.get(code));
     }
 
-    function renderDash(rows, order) {
+    function renderDash(rows, order, times) {
       const items = carrierSummary(rows, order);
       dashEl.hidden = items.length === 0;
       dashRowsEl.innerHTML = items.map((item) => {
@@ -423,6 +444,7 @@
           ${countCell(item.MANUAL_CHECK_REQUIRED)}
           ${countCell(item.CHECK_FAILED)}
           <td class="bar"><span class="pct-row"><span class="pct">${pct}%</span><span class="mini"><i style="width:${pct}%"></i></span></span></td>
+          ${timeCell(times && times[item.carrier])}
         </tr>`;
       }).join("");
     }
@@ -464,7 +486,7 @@
         ),
       ].join("");
 
-      renderDash(data.rows || [], data.carriers || knownCarriers);
+      renderDash(data.rows || [], data.carriers || knownCarriers, data.carrier_times || {});
 
       const rows = (data.rows || []).filter((row) => {
         if (carrierFilter && row.carrier !== carrierFilter) return false;

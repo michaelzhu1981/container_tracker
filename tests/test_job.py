@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from job import JobBusyError, JobIdleError, JobManager, JobStartError
+from job import (
+    JobBusyError,
+    JobIdleError,
+    JobManager,
+    JobStartError,
+    carrier_query_times,
+)
 from models import TrackResult
 
 
@@ -179,3 +185,79 @@ def test_job_snapshot_merges_previous_results(tmp_path: Path):
     row = manager.snapshot()["rows"][0]
     assert row["status"] == "SAILED"
     assert row["phase"] == "done"
+    assert manager.snapshot()["carrier_times"] == {}
+
+
+def test_carrier_query_times_use_wall_clock_and_average():
+    rows = [
+        {"Carrier": "HLCU"},
+        {"Carrier": "HLCU"},
+        {"Carrier": "YMJA"},
+    ]
+    times = {
+        0: {"started_ms": 1_000, "finished_ms": 11_000},
+        1: {"started_ms": 13_000, "finished_ms": 21_000},
+        2: {"started_ms": 2_000, "finished_ms": 6_000},
+    }
+    assert carrier_query_times(rows, times, now_ms=30_000) == {
+        "HLCU": {"total_ms": 20_000, "avg_ms": 9_000, "queried": 2},
+        "YMJA": {"total_ms": 4_000, "avg_ms": 4_000, "queried": 1},
+    }
+
+
+def test_job_snapshot_records_query_times(tmp_path: Path, monkeypatch):
+    source = tmp_path / "in.xlsx"
+    _write_input(
+        source,
+        [("HLXU1234567", "HLCU"), ("HLXU7654321", "HLCU")],
+    )
+    clock = {"t": 1_000_000}
+    monkeypatch.setattr("job._now_ms", lambda: clock["t"])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    assert manager.snapshot()["carrier_times"] == {}
+
+    manager._on_progress({"index": 0, "phase": "querying"})
+    clock["t"] = 1_010_000
+    manager._on_progress(
+        {
+            "index": 0,
+            "phase": "done",
+            "result": TrackResult(
+                container="HLXU1234567",
+                carrier="HLCU",
+                status="NOT_LOADED",
+                checked_at="t",
+            ),
+        }
+    )
+    clock["t"] = 1_012_000
+    manager._on_progress({"index": 1, "phase": "querying"})
+    clock["t"] = 1_020_000
+    snap = manager.snapshot()
+    assert snap["carrier_times"]["HLCU"] == {
+        "total_ms": 20_000,
+        "avg_ms": 9_000,
+        "queried": 2,
+    }
+
+    manager.reload_from_disk()
+    assert manager.snapshot()["carrier_times"] == {}
+
+
+def test_done_without_query_is_not_timed(tmp_path: Path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("HLXU1234567", "HLCU")])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    manager._on_progress(
+        {
+            "index": 0,
+            "phase": "done",
+            "result": TrackResult(
+                container="HLXU1234567",
+                carrier="HLCU",
+                status="SAILED",
+                checked_at="t",
+            ),
+        }
+    )
+    assert manager.snapshot()["carrier_times"] == {}

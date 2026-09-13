@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import Counter
+import time
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -73,6 +74,41 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def carrier_query_times(
+    rows: list[dict],
+    query_times: dict[int, dict[str, int]],
+    *,
+    now_ms: int | None = None,
+) -> dict[str, dict[str, int]]:
+    """Wall-clock total and mean query time per carrier for this job."""
+    clock = _now_ms() if now_ms is None else now_ms
+    by_carrier: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for idx, row in enumerate(rows):
+        timing = query_times.get(idx)
+        if not timing:
+            continue
+        started = timing.get("started_ms")
+        if started is None:
+            continue
+        ended = timing.get("finished_ms", clock)
+        by_carrier[row["Carrier"]].append((started, ended))
+    out: dict[str, dict[str, int]] = {}
+    for carrier, spans in by_carrier.items():
+        first = min(start for start, _end in spans)
+        last = max(end for _start, end in spans)
+        durations = [max(0, end - start) for start, end in spans]
+        out[carrier] = {
+            "total_ms": max(0, last - first),
+            "avg_ms": round(sum(durations) / len(durations)),
+            "queried": len(durations),
+        }
+    return out
+
+
 class JobManager:
     def __init__(
         self,
@@ -88,6 +124,7 @@ class JobManager:
         self.rows: list[dict] = []
         self.results: list[TrackResult | None] = []
         self.active: dict[int, dict[str, Any]] = {}
+        self.query_times: dict[int, dict[str, int]] = {}
         self.current_index: int | None = None
         self.phase: str | None = None
         self.challenge: dict | None = None
@@ -115,6 +152,7 @@ class JobManager:
             raise JobBusyError("Cannot reload while a job is running.")
         self.rows, self.results = load_board(self.input_path, self.output_path)
         self.active = {}
+        self.query_times = {}
         self.current_index = None
         self.phase = None
         self.challenge = None
@@ -168,6 +206,7 @@ class JobManager:
                     )
         self.state = "running"
         self.active = {}
+        self.query_times = {}
         self.current_index = None
         self.phase = None
         self.challenge = None
@@ -203,8 +242,12 @@ class JobManager:
                     "phase": phase,
                     "challenge": payload.get("challenge") if phase == "challenge" else None,
                 }
+                self.query_times.setdefault(idx, {"started_ms": _now_ms()})
             elif phase == "done":
                 self.active.pop(idx, None)
+                timing = self.query_times.get(idx)
+                if timing is not None and "finished_ms" not in timing:
+                    timing["finished_ms"] = _now_ms()
             self.current_index = idx
             if phase == "challenge" and payload.get("challenge"):
                 current_challenge = payload["challenge"]
@@ -299,6 +342,9 @@ class JobManager:
             self.phase = None
             self.challenge = None
             self.finished_at = _now()
+            closed_at = _now_ms()
+            for timing in self.query_times.values():
+                timing.setdefault("finished_ms", closed_at)
             self.task = None
 
     def snapshot(self) -> dict[str, Any]:
@@ -369,4 +415,5 @@ class JobManager:
             },
             "rows": rows_out,
             "carriers": list(SUPPORTED_CARRIERS),
+            "carrier_times": carrier_query_times(self.rows, self.query_times),
         }

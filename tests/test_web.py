@@ -26,9 +26,11 @@ def test_status_page_and_stop_when_idle(tmp_path: Path):
         page = client.get("/")
         assert page.status_code == 200
         assert "Container Tracker" in page.text
+        assert ">Time<" in page.text
         status = client.get("/api/status")
         assert status.status_code == 200
         assert status.json()["rows"][0]["container"] == "HLXU1234567"
+        assert status.json()["carrier_times"] == {}
         stopped = client.post("/api/stop")
         assert stopped.status_code == 400
 
