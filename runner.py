@@ -352,8 +352,6 @@ def _cells_to_result(container: str, carrier: str, cells: dict) -> TrackResult:
         sailed=sailed_b,
         vessel=cells.get("Vessel") or None,
         voyage=cells.get("Voyage") or None,
-        load_port=cells.get("Load Port") or None,
-        load_time=cells.get("Load Time") or None,
         atd=cells.get("ATD") or None,
         latest_event=cells.get("Latest Event") or None,
         status=status,  # type: ignore[arg-type]

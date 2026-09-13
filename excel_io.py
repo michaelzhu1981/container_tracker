@@ -105,8 +105,6 @@ def result_to_cells(result: TrackResult | None) -> dict[str, str]:
             "Sailed": YES_NO[result.sailed],
             "Vessel": result.vessel or "",
             "Voyage": result.voyage or "",
-            "Load Port": result.load_port or "",
-            "Load Time": result.load_time or "",
             "ATD": result.atd or "",
             "Latest Event": result.latest_event or "",
             "Checked At": result.checked_at or "",

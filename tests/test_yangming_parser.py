@@ -42,7 +42,6 @@ def test_parse_on_board_waiting_slash_dates():
         checked_at="2026-09-13 00:00:00",
     )
     assert result.status == "LOADED_WAITING_DEPARTURE"
-    assert result.load_time == "2026-08-25 12:48"
     assert result.vessel == "ONE MANHATTAN"
 
 

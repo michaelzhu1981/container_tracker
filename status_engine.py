@@ -247,7 +247,7 @@ def evaluate(
     load = [e for e in ocean if e.type == "LOAD"]
 
     if depa:
-        chosen = _latest(depa, timeline_order)
+        chosen = _earliest(depa, timeline_order)
         result.sailed = True
         result.loaded = True
         result.atd = format_event_time(chosen) if chosen else None
@@ -256,8 +256,6 @@ def evaluate(
         first_load = _earliest(load, timeline_order)
         last_load = _latest(load, timeline_order)
         if last_load:
-            result.load_port = display_port(last_load.location_raw) or last_load.location_norm
-            result.load_time = format_event_time(last_load)
             if not result.vessel:
                 result.vessel = last_load.vessel
             if not result.voyage:
@@ -271,10 +269,6 @@ def evaluate(
         result.sailed = False
         result.vessel = chosen.vessel if chosen else None
         result.voyage = chosen.voyage if chosen else None
-        result.load_port = (
-            display_port(chosen.location_raw) or chosen.location_norm if chosen else None
-        )
-        result.load_time = format_event_time(chosen) if chosen else None
         first_load = _earliest(load, timeline_order)
         if first_load:
             result.pol = display_port(first_load.location_raw) or first_load.location_norm
@@ -309,8 +303,6 @@ def _finalize(
         result.pol = None
         result.vessel = None
         result.voyage = None
-        result.load_port = None
-        result.load_time = None
         result.atd = None
         if status != "MANUAL_CHECK_REQUIRED":
             result.latest_event = None

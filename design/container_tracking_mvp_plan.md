@@ -190,8 +190,6 @@ class TrackResult:
     sailed: bool | None
     vessel: str | None
     voyage: str | None
-    load_port: str | None
-    load_time: str | None           # YYYY-MM-DD or YYYY-MM-DD HH:MM
     atd: str | None
     latest_event: str | None
     status: str
@@ -247,7 +245,7 @@ Planned / Estimated 日期**不参与**选航次。选航次只用 `ACT` 日期�
 2. 有 `event_time` 则比时刻；双方都没有则这一档相等
 3. 平局用 `sequence_index`：`oldest_first` 时 index 更大更晚；`newest_first` 时 index 更小更晚
 
-输出 `Load Time` / `ATD`：有时刻写 `YYYY-MM-DD HH:MM`，只有日期写 `YYYY-MM-DD`。
+输出 `ATD`：有时刻写 `YYYY-MM-DD HH:MM`，只有日期写 `YYYY-MM-DD`。
 
 30 天切程只用日期差。
 
@@ -255,8 +253,8 @@ Planned / Estimated 日期**不参与**选航次。选航次只用 `ACT` 日期�
 
 ### 4.4 状态优先级（只看 latest_journey 的 ocean_leg）
 
-1. 存在 `ACT + DEPA` 且为 `ocean_leg` → `SAILED`。`ATD` / 船名 / 航次取该程里**最晚**的一条此类 Actual DEPA。**驳船离港不是开船。**
-2. 否则存在 `ACT + LOAD` 且为 `ocean_leg` → `LOADED_WAITING_DEPARTURE`。`Load Port` / `Load Time` / 船名 / 航次取该程里**最晚**的一条此类 Actual LOAD
+1. 存在 `ACT + DEPA` 且为 `ocean_leg` → `SAILED`。`ATD` / 船名 / 航次取该程里**最早**的一条此类 Actual DEPA（起始港开船，不是中转后段）。**驳船离港不是开船。**
+2. 否则存在 `ACT + LOAD` 且为 `ocean_leg` → `LOADED_WAITING_DEPARTURE`。船名 / 航次取该程里**最晚**的一条此类 Actual LOAD
 3. 页面有有效结果但以上都没有（例如只有驳船动态）→ `NOT_LOADED`
 4. CAPTCHA / 无法切航次 → `MANUAL_CHECK_REQUIRED`
 5. 超时、DOM 变、无结果无法解析 → `CHECK_FAILED`
@@ -276,7 +274,7 @@ SUCCESS 时 `Loaded` / `Sailed` 填 `YES` 或 `NO`。失败或人工时这两列
 - 取 `latest_journey` 里**最早**一条 `ocean_leg` + `ACT + LOAD` 的地点，经 `ports.yaml` 规范化（如 `CNYTN` → `YANTIAN`）
 - 驳船装船地点不当作 POL
 - 尚无海船 Actual LOAD、失败、需人工：留空
-- `POL` = 本程第一海船装船港；`Load Port` = 本程最晚海船 Actual LOAD 地点。无中转时两者相同
+- `POL` = 本程第一海船装船港。不另输出中转后的装船港或装船时间
 
 ### 4.6 硬规则
 
@@ -284,13 +282,13 @@ SUCCESS 时 `Loaded` / `Sailed` 填 `YES` 或 `NO`。失败或人工时这两列
 - ETD / Planned / Estimated ≠ Sailed
 - Barge DEPA ≠ Sailed；Barge LOAD ≠ Loaded
 - 空箱 LOAD/DEPA 不算装船开船
-- 同一程已中转：Loaded/Sailed 只看海船；`Load Port`/`ATD` 用最晚海船事件；`POL` 用最早海船 LOAD
+- 同一程已中转：Loaded/Sailed 只看海船；`ATD` / 船名 / 航次用最早海船 Actual DEPA；`POL` 用最早海船 LOAD
 - Latest Event = 该程按复合键最晚的 `ACT`（可含驳船、空箱）
 - 时区不明不强转 UTC；保留 `timestamp_raw`
 
 ### 4.7 港口显示名
 
-`data/ports.yaml` **只规范化输出** `POL` / `Load Port`，不参与输入，也不参与是否装船/开船。Chiwan / Mawan 不强行等同 Shekou。
+`data/ports.yaml` **只规范化输出** `POL`，不参与输入，也不参与是否装船/开船。Chiwan / Mawan 不强行等同 Shekou。
 
 MVP 种子别名（大小写不敏感）：
 
@@ -417,11 +415,9 @@ CMAU1234567   CMDU
 | `Status` | `NOT_LOADED` / `LOADED_WAITING_DEPARTURE` / `SAILED` / `MANUAL_CHECK_REQUIRED` / `CHECK_FAILED` |
 | `Loaded` | `YES` / `NO` / 空。仅 SUCCESS 时填 |
 | `Sailed` | 同上 |
-| `Vessel` | 最晚海船 Actual LOAD/DEPA 的船名；不含驳船 |
+| `Vessel` | `SAILED` 时取最早海船 Actual DEPA 的船名；已装未开时取最晚海船 Actual LOAD。不含驳船 |
 | `Voyage` | 航次 |
-| `Load Port` | 最晚海船 Actual LOAD 地点；未装海船空 |
-| `Load Time` | 上述 LOAD：`YYYY-MM-DD HH:MM` 或仅 `YYYY-MM-DD` |
-| `ATD` | 最晚海船 Actual DEPA；不含驳船、不含空箱 |
+| `ATD` | 最早海船 Actual DEPA（本程离开 POL 的时间）；不含驳船、不含空箱 |
 | `Latest Event` | 英文短句，如 `Vessel departed YANTIAN` |
 | `Checked At` | 本机查询时间 `YYYY-MM-DD HH:MM:SS` |
 | `Check Result` | `SUCCESS` / `MANUAL` / `FAILED` |
@@ -434,10 +430,10 @@ CMAU1234567   CMDU
 已开船样例：
 
 ```text
-HLXU1234567 | HLCU | YANTIAN | SAILED | YES | YES | MONTEVIDEO EXPRESS | 2632E | YANTIAN | 2026-09-10 18:20 | 2026-09-11 03:40 | Vessel departed YANTIAN | 2026-09-11 23:38:00 | SUCCESS
+HLXU1234567 | HLCU | YANTIAN | SAILED | YES | YES | MONTEVIDEO EXPRESS | 2632E | 2026-09-11 03:40 | Vessel departed YANTIAN | 2026-09-11 23:38:00 | SUCCESS
 ```
 
-仅有驳船动态：`Status=NOT_LOADED`，`Loaded=NO`，`Sailed=NO`，`POL` / `Load Port` / 船名航次 / 时间为空。
+仅有驳船动态：`Status=NOT_LOADED`，`Loaded=NO`，`Sailed=NO`，`POL` / 船名航次 / `ATD` 为空。
 
 查询失败：`Status=CHECK_FAILED`，`POL`/`Loaded`/`Sailed` 等为空，`Check Result=FAILED`，`Error Code=CLOUDFLARE`。
 

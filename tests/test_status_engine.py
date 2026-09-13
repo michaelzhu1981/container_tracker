@@ -136,10 +136,9 @@ def test_cnytn_normalizes_to_yantian_pol():
     ]
     result = _eval(events)
     assert result.pol == "YANTIAN"
-    assert result.load_port == "YANTIAN"
 
 
-def test_transshipment_pol_is_first_load_port_is_latest():
+def test_transshipment_pol_is_first_load():
     events = [
         ev(
             type="LOAD",
@@ -172,8 +171,60 @@ def test_transshipment_pol_is_first_load_port_is_latest():
     result = _eval(events)
     assert result.status == "SAILED"
     assert result.pol == "YANTIAN"
-    assert result.load_port == "SINGAPORE"
+    assert result.atd == "2026-09-02"
     assert result.vessel == "FEEDER ONE"
+
+
+def test_transshipment_atd_is_first_ocean_departure():
+    """FANU1965730: feeder left Qasim 08-07; mother left Salalah 08-18. ATD is origin."""
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="MUHAMMAD BIN QASIM",
+            event_date="2026-08-07",
+            event_time="03:20",
+            sequence_index=4,
+            vessel="BSG BIMINI",
+            voyage="632W",
+            raw_text="Loaded MUHAMMAD BIN QASIM",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="MUHAMMAD BIN QASIM",
+            event_date="2026-08-07",
+            event_time="12:01",
+            sequence_index=5,
+            vessel="BSG BIMINI",
+            voyage="632W",
+            raw_text="Vessel departed MUHAMMAD BIN QASIM",
+        ),
+        ev(
+            type="LOAD",
+            location_raw="SALALAH",
+            event_date="2026-08-18",
+            event_time="01:59",
+            sequence_index=8,
+            vessel="TUCAPEL",
+            voyage="6132",
+            raw_text="Loaded SALALAH",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="SALALAH",
+            event_date="2026-08-18",
+            event_time="07:23",
+            sequence_index=9,
+            vessel="TUCAPEL",
+            voyage="6132",
+            raw_text="Vessel departed SALALAH",
+        ),
+    ]
+    result = _eval(events, container="FANU1965730")
+    assert result.status == "SAILED"
+    assert result.pol == "MUHAMMAD BIN QASIM"
+    assert result.atd == "2026-08-07 12:01"
+    assert result.vessel == "BSG BIMINI"
+    assert result.voyage == "632W"
 
 
 def test_transshipment_without_booking_keeps_origin_departure():
@@ -224,7 +275,6 @@ def test_transshipment_without_booking_keeps_origin_departure():
     assert result.status == "SAILED"
     assert result.pol == "MUHAMMAD BIN QASIM"
     assert result.atd == "2026-08-28 12:48"
-    assert result.load_port == "SALALAH"
     assert result.vessel == "BSG BIMINI"
     assert result.voyage == "635W"
 

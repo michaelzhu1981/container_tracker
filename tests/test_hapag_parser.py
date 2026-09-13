@@ -44,8 +44,6 @@ def test_parse_beta_transship_loaded_fixture():
     assert result.status == "SAILED"
     assert result.pol == "MUHAMMAD BIN QASIM"
     assert result.atd == "2026-08-28 12:48"
-    assert result.load_port == "SALALAH"
-    assert result.load_time == "2026-09-07 03:06"
     assert result.vessel == "BSG BIMINI"
     assert result.voyage == "635W"
     assert result.sailed is True

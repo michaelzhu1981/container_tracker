@@ -48,8 +48,6 @@ class TrackResult:
     sailed: bool | None = None
     vessel: str | None = None
     voyage: str | None = None
-    load_port: str | None = None
-    load_time: str | None = None
     atd: str | None = None
     latest_event: str | None = None
     status: Status = "CHECK_FAILED"

@@ -50,8 +50,6 @@ RESULT_COLUMNS = (
     "Sailed",
     "Vessel",
     "Voyage",
-    "Load Port",
-    "Load Time",
     "ATD",
     "Latest Event",
     "Checked At",
