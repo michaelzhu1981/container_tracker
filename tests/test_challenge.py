@@ -79,6 +79,21 @@ def test_one_i18n_bundle_is_not_treated_as_no_result():
     assert looks_like_no_result("Can't identify your input")
 
 
+def test_cma_provisional_moves_disclaimer_is_not_no_result():
+    visible = (
+        "Tracking details\n"
+        "Loaded on board\n"
+        "TCLU8224047\n"
+        "Gate out empty from depot\n"
+        "Provisional moves not found, please feel free to use Contact Support"
+    )
+    assert not looks_like_no_result(visible)
+    assert looks_like_no_result(
+        "Your shipment was not found, please modify your search\n"
+        "returned to the depot more than 15 days"
+    )
+
+
 def test_query_screenshot_keeps_tracking_results_only():
     assert is_query_screenshot_page(
         "Latest Event\nLoaded SALALAH",
@@ -444,6 +459,21 @@ def test_save_artifacts_skips_screenshot_on_cloudflare_page(tmp_path, monkeypatc
     assert tracker._screenshot is None
     assert not (tmp_path / "HLXU1234567.png").exists()
     assert (tmp_path / "HLXU1234567.html").exists()
+
+
+def test_save_artifacts_ignores_missing_screenshot_file(tmp_path, monkeypatch):
+    monkeypatch.setattr("trackers.base.html_path", lambda container: tmp_path / f"{container}.html")
+    monkeypatch.setattr("trackers.base.screenshot_path", lambda container: tmp_path / f"{container}.png")
+
+    class NoShotPage(FakePage):
+        async def screenshot(self, path=None, full_page=False, clip=None):
+            return None
+
+    page = NoShotPage(text="Tracking details\nLoaded on board\nTCLU8224047")
+    tracker = DummyTracker(page)
+    asyncio.run(tracker.save_artifacts("TCLU8224047"))
+    assert tracker._screenshot is None
+    assert not (tmp_path / "TCLU8224047.png").exists()
 
 
 def test_no_human_fallback_raises_after_auto_fails(monkeypatch):

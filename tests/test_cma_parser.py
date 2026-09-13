@@ -1,7 +1,8 @@
+import asyncio
 from pathlib import Path
 
 from status_engine import evaluate
-from trackers.cma import parse_cma_html
+from trackers.cma import CmaTracker, parse_cma_html
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cma"
 
@@ -109,3 +110,35 @@ def test_parse_kendo_grid_rows():
     assert events[0].event_time == "18:20"
     assert events[1].event_time == "03:40"
     assert events[1].voyage == "046E"
+
+
+class _ExpandPage:
+    def __init__(self) -> None:
+        self.visible_events = 1
+        self.clicked = 0
+        self.evaluate_scripts: list[str] = []
+
+    async def evaluate(self, script: str):
+        self.evaluate_scripts.append(script)
+        if "Display Previous Moves" in script:
+            self.clicked += 1
+            self.visible_events = 3
+            return 1
+        if "capsule" in script:
+            return self.visible_events
+        return 0
+
+    def locator(self, selector: str):
+        raise AssertionError(f"locator fallback should not run: {selector}")
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+
+def test_expand_result_details_clicks_previous_moves_and_waits():
+    page = _ExpandPage()
+    tracker = CmaTracker(page)
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 1
+    assert page.visible_events == 3
+    assert any("Display Previous Moves" in script for script in page.evaluate_scripts)

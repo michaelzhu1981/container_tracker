@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -16,9 +18,54 @@ from event_text import (
 from html_tables import parse_tables
 from models import CanonicalEvent, Classifier, TransportMode
 from ports import normalize_key
-from trackers.base import BaseTracker, TrackerError
+from trackers.base import BaseTracker, TrackerError, looks_like_no_result
+
+LOGGER = logging.getLogger("container_tracker")
 
 TRACK_URL = "https://www.cma-cgm.com/ebusiness/tracking"
+
+_CLICK_PREVIOUS_MOVES_JS = """() => {
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const seen = new Set();
+    let n = 0;
+    const targets = document.querySelectorAll(
+        "a[aria-label='Display Previous Moves'], "
+        + "a[aria-label='Display Details'], "
+        + ".k-hierarchy-cell[aria-expanded='false'] a"
+    );
+    for (const el of targets) {
+        if (seen.has(el) || !visible(el)) continue;
+        const label = (el.getAttribute("aria-label") || el.innerText || "").toLowerCase();
+        if (label.includes("hide previous")) continue;
+        seen.add(el);
+        const cell = el.closest(".k-hierarchy-cell") || el;
+        cell.click();
+        if (cell !== el) el.click();
+        n += 1;
+    }
+    return n;
+}"""
+
+_VISIBLE_EVENT_COUNT_JS = """() => {
+    const skip = new Set(["pol", "pod"]);
+    let n = 0;
+    for (const el of document.querySelectorAll("#gridTrackingDetails .capsule, .capsule")) {
+        const text = (el.innerText || "").trim().toLowerCase();
+        if (!text || skip.has(text)) continue;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        if (r.height > 8 && r.width > 8 && cs.display !== "none" && cs.visibility !== "hidden") {
+            n += 1;
+        }
+    }
+    return n;
+}"""
 
 _HEADER_HINTS = {
     "date": ("date", "time"),
@@ -391,6 +438,7 @@ class CmaTracker(BaseTracker):
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
+        "#trackingsearchsection",
         "#gridTrackingDetails",
         "table:has-text('Moves')",
         "table:has-text('LOADED ON BOARD')",
@@ -415,20 +463,50 @@ class CmaTracker(BaseTracker):
             except Exception:  # noqa: BLE001
                 continue
 
-    async def expand_result_details(self) -> None:
+    async def _visible_event_count(self) -> int:
+        try:
+            return int(await self.page.evaluate(_VISIBLE_EVENT_COUNT_JS) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    async def _click_previous_moves(self) -> int:
+        try:
+            clicked = await self.page.evaluate(_CLICK_PREVIOUS_MOVES_JS)
+            if clicked:
+                return int(clicked)
+        except Exception:  # noqa: BLE001
+            pass
         for selector in (
+            "a[aria-label='Display Previous Moves']",
             "a:has-text('Display Previous Moves')",
             "a:has-text('Display Details')",
-            ".k-hierarchy-cell a",
+            ".k-hierarchy-cell[aria-expanded='false'] a",
         ):
             target = self.page.locator(selector)
             try:
                 if await target.first.is_visible(timeout=800):
                     await target.first.click(timeout=3_000)
-                    await self.page.wait_for_timeout(400)
-                    return
+                    return 1
             except Exception:  # noqa: BLE001
                 continue
+        return 0
+
+    async def expand_result_details(self) -> None:
+        before = await self._visible_event_count()
+        clicked = await self._click_previous_moves()
+        if not clicked and before > 1:
+            return
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            now = await self._visible_event_count()
+            if clicked and now > before:
+                await self.page.wait_for_timeout(400)
+                return
+            if not clicked and now >= 1:
+                return
+            await self.page.wait_for_timeout(200)
+        if clicked:
+            LOGGER.info("CMA previous moves stayed collapsed; screenshot may lack older events.")
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -520,7 +598,7 @@ class CmaTracker(BaseTracker):
         events = parse_cma_html(html)
         if events:
             return events
-        text = (await self._visible_text()).lower()
-        if "not found" in text or "returned to the depot" in text:
+        text = await self._visible_text()
+        if looks_like_no_result(text):
             raise TrackerError("No tracking result for this container.", "NO_RESULT")
         raise TrackerError("Tracking table was not found or could not be parsed.", "PARSE")

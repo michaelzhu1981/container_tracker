@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -52,7 +53,11 @@ def _find_element_js(selector: str) -> str:
             const needle = {text}.toLowerCase();
             const nodes = document.querySelectorAll({css});
             for (const el of nodes) {{
-                const label = (el.innerText || el.textContent || "").toLowerCase();
+                const label = (
+                    (el.innerText || el.textContent || "")
+                    + " "
+                    + (el.getAttribute("aria-label") || "")
+                ).toLowerCase();
                 if (label.includes(needle)) return el;
             }}
             return null;
@@ -167,6 +172,153 @@ def set_chrome_tab_url(url: str, *, host: str) -> None:
     open_chrome_window(url)
 
 
+_DEFAULT_SHOT_ROOT_JS = """(document.querySelector("#trackingsearchsection")
+    || document.querySelector("#gridTrackingDetails")
+    || document.querySelector(".tracking-details")
+    || document.body)"""
+
+# Paint the already-laid-out result card. Chrome Apple Events cannot take a
+# real window screenshot (no CDP; macOS Screen Recording is often off).
+_DOM_SCREENSHOT_JS = r"""() => {
+    const root = __ROOT__;
+    if (!root) return null;
+    const rootRect = root.getBoundingClientRect();
+    const width = Math.max(root.scrollWidth || 0, rootRect.width, 1);
+    const height = Math.max(root.scrollHeight || 0, rootRect.height, 1);
+    const scale = Math.min(2, window.devicePixelRatio || 1);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.ceil(width * scale));
+    canvas.height = Math.max(1, Math.ceil(height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.scale(scale, scale);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+    const skip = new Set(["SCRIPT", "STYLE", "LINK", "NOSCRIPT", "META", "HEAD", "SVG", "PATH", "CANVAS"]);
+    const transparent = (bg) => !bg || bg === "transparent" || /,\s*0\)$/.test(bg);
+    const els = [root, ...root.querySelectorAll("*")];
+    for (const el of els) {
+        if (skip.has(el.tagName)) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) continue;
+        const r = el.getBoundingClientRect();
+        const x = r.left - rootRect.left + (root.scrollLeft || 0);
+        const y = r.top - rootRect.top + (root.scrollTop || 0);
+        if (r.width < 1 || r.height < 1) continue;
+        if (x > width || y > height || x + r.width < 0 || y + r.height < 0) continue;
+        const bg = cs.backgroundColor;
+        if (!transparent(bg)) {
+            const radius = Math.min(
+                parseFloat(cs.borderTopLeftRadius) || 0,
+                r.height / 2,
+                r.width / 2
+            );
+            ctx.fillStyle = bg;
+            if (radius > 0 && ctx.roundRect) {
+                ctx.beginPath();
+                ctx.roundRect(x, y, r.width, r.height, radius);
+                ctx.fill();
+            } else {
+                ctx.fillRect(x, y, r.width, r.height);
+            }
+        }
+        const sides = [
+            ["Top", x, y, x + r.width, y],
+            ["Right", x + r.width, y, x + r.width, y + r.height],
+            ["Bottom", x, y + r.height, x + r.width, y + r.height],
+            ["Left", x, y, x, y + r.height],
+        ];
+        for (const [side, x1, y1, x2, y2] of sides) {
+            const bw = parseFloat(cs["border" + side + "Width"]) || 0;
+            if (bw <= 0 || cs["border" + side + "Style"] === "none") continue;
+            ctx.strokeStyle = cs["border" + side + "Color"];
+            ctx.lineWidth = bw;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+        let text = "";
+        for (const node of el.childNodes) {
+            if (node.nodeType === 3) text += node.nodeValue || "";
+        }
+        text = text.replace(/\s+/g, " ").trim();
+        if (!text) continue;
+        const family = String(cs.fontFamily || "");
+        if (/musticon|fontawesome|glyph|icomoon|icon/i.test(family) && text.length <= 2) {
+            continue;
+        }
+        const size = parseFloat(cs.fontSize) || 14;
+        if (size < 6) continue;
+        ctx.font = (cs.fontWeight || "400") + " " + size + "px Arial, Helvetica, sans-serif";
+        ctx.fillStyle = cs.color || "#111111";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = (cs.textAlign === "center" || cs.justifyContent === "center")
+            ? "center"
+            : "left";
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, r.width, r.height);
+        ctx.clip();
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const maxW = Math.max(8, r.width - padL - padR);
+        const lineH = parseFloat(cs.lineHeight) || size * 1.3;
+        const words = text.split(" ");
+        const lines = [];
+        let line = "";
+        for (const word of words) {
+            const test = line ? line + " " + word : word;
+            if (ctx.measureText(test).width > maxW && line) {
+                lines.push(line);
+                line = word;
+            } else {
+                line = test;
+            }
+        }
+        if (line) lines.push(line);
+        const tx = ctx.textAlign === "center" ? x + r.width / 2 : x + padL;
+        let ty = y + r.height / 2 - (lines.length * lineH) / 2 + lineH / 2;
+        for (const part of lines) {
+            ctx.fillText(part, tx, ty, maxW);
+            ty += lineH;
+        }
+        ctx.restore();
+    }
+    return canvas.toDataURL("image/png");
+}"""
+
+
+def _screenshot_root_js(selector: str | None = None) -> str:
+    if not selector:
+        return _DEFAULT_SHOT_ROOT_JS
+    found = _find_element_js(selector)
+    return f"""(() => {{
+        const el = {found};
+        if (!el) return null;
+        return el.closest("#trackingsearchsection, .tracking-details") || el;
+    }})()"""
+
+
+def write_png_data_url(data: Any, path: str | Path) -> Path:
+    dest = Path(path)
+    if not isinstance(data, str) or "base64," not in data:
+        raise SystemChromeError("Chrome did not return a screenshot.")
+    raw = base64.b64decode(data.split("base64,", 1)[1], validate=False)
+    if len(raw) < 32:
+        raise SystemChromeError("Chrome screenshot was empty.")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
+    return dest
+
+
+def capture_chrome_png(path: str | Path, *, host: str, selector: str | None = None) -> Path:
+    script = _DOM_SCREENSHOT_JS.replace("__ROOT__", _screenshot_root_js(selector), 1)
+    data = chrome_js(script, host=host)
+    return write_png_data_url(data, path)
+
+
 class SystemLocator:
     def __init__(self, page: "SystemChromePage", selector: str) -> None:
         self.page = page
@@ -240,7 +392,7 @@ class SystemLocator:
             raise SystemChromeError(f"Timed out waiting for {self.selector}")
 
     async def screenshot(self, path: str | None = None) -> None:
-        raise SystemChromeError("screenshot not supported")
+        await self.page.screenshot(path=path, selector=self.selector)
 
 
 class _Keyboard:
@@ -369,8 +521,18 @@ class SystemChromePage:
     async def wait_for_load_state(self, state: str = "load", timeout: float = 0) -> None:
         await asyncio.sleep(0.2)
 
-    async def screenshot(self, path: str | None = None, full_page: bool = False, clip=None) -> None:
-        return None
+    async def screenshot(
+        self,
+        path: str | None = None,
+        full_page: bool = False,
+        clip=None,
+        selector: str | None = None,
+    ) -> None:
+        if not path:
+            return
+        await asyncio.to_thread(
+            capture_chrome_png, path, host=self._host, selector=selector
+        )
 
     async def close(self) -> None:
         self._closed = True

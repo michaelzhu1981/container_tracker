@@ -128,13 +128,23 @@ def is_query_screenshot_page(text: str, html: str = "") -> bool:
     return any(marker in blob for marker in _QUERY_PAGE_MARKERS)
 
 
+_NO_RESULT_IGNORES = (
+    "provisional moves not found",
+)
+
+
 def looks_like_no_result(text: str) -> bool:
     """True when visible page text says the container was not found.
 
     Do not pass raw HTML: ONE and other sites embed i18n strings such as
     "No Results Found" and "Page Not Found" in the document even on hits.
+    CMA also shows "Provisional moves not found" on pages that have results.
     """
     blob = text.lower()
+    if any(marker in blob for marker in _QUERY_PAGE_MARKERS):
+        return False
+    for phrase in _NO_RESULT_IGNORES:
+        blob = blob.replace(phrase, " ")
     return any(token in blob for token in _NO_RESULT_TOKENS)
 
 
@@ -481,7 +491,11 @@ class BaseTracker(ABC):
         try:
             if not await self._screenshot_query_content(shot):
                 await self.page.screenshot(path=str(shot), full_page=False)
-            self._screenshot = shot
+            if shot.is_file() and shot.stat().st_size > 32:
+                self._screenshot = shot
+            else:
+                self._screenshot = None
+                shot.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Screenshot failed for %s", container)
             self._screenshot = None
