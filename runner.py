@@ -10,11 +10,14 @@ from pathlib import Path
 from artifacts import log_path, relative_to_root
 from config import (
     CARRIER_TIMEOUT_MS,
+    CIRCUIT_BREAK_CODES,
+    CIRCUIT_BREAK_STREAK,
     LOCALE,
     NAV_TIMEOUT_MS,
     OUTPUT_XLSX,
-    QUERY_DELAY_SECONDS,
-    session_path,
+    chrome_profile_dir,
+    default_headed_for,
+    query_delay_seconds,
 )
 from excel_io import (
     build_output_frame,
@@ -30,14 +33,86 @@ from validate import carrier_supported, container_shape_ok, iso6346_check_digit_
 LOGGER = logging.getLogger("container_tracker")
 
 
-async def _launch_browser(playwright, *, headed: bool):
-    """Prefer installed Chrome; Playwright Chromium is often challenged."""
-    kwargs = {"headless": not headed}
-    try:
-        return await playwright.chromium.launch(channel="chrome", **kwargs)
-    except Exception:  # noqa: BLE001
-        LOGGER.info("System Chrome not available; using Playwright Chromium.")
-        return await playwright.chromium.launch(**kwargs)
+class CarrierBrowser:
+    """One persistent Chrome profile per carrier; never relaunched per box."""
+
+    def __init__(self, playwright, carrier: str, *, headed: bool) -> None:
+        self.playwright = playwright
+        self.carrier = carrier
+        self.headed = headed
+        self.context = None
+        self.page = None
+
+    async def start(self) -> None:
+        if self.context is not None:
+            try:
+                await self.context.close()
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Previous %s browser context did not close cleanly.", self.carrier)
+            self.context = None
+        profile = chrome_profile_dir(self.carrier)
+        profile.mkdir(parents=True, exist_ok=True)
+        kwargs = {
+            "headless": not self.headed,
+            "locale": LOCALE,
+            "viewport": {"width": 1400, "height": 900},
+        }
+        try:
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                str(profile), channel="chrome", **kwargs
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.info("System Chrome not available; using Playwright Chromium.")
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                str(profile), **kwargs
+            )
+        self.context.set_default_timeout(CARRIER_TIMEOUT_MS.get(self.carrier, NAV_TIMEOUT_MS))
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+
+    async def ensure_headed(self) -> bool:
+        if self.headed:
+            return False
+        LOGGER.info("Opening a visible Chrome window for %s using the same profile.", self.carrier)
+        self.headed = True
+        await self.start()
+        return True
+
+    async def close(self) -> None:
+        if self.context is None:
+            return
+        try:
+            await self.context.close()
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not close %s browser context.", self.carrier)
+        self.context = None
+        self.page = None
+
+
+def should_relaunch_browser_per_box(carrier: str) -> bool:
+    """Kept so tests can lock the 'one browser per carrier' rule."""
+    return False
+
+
+def update_circuit(streak: int, error_code: str | None) -> tuple[int, bool]:
+    if error_code in CIRCUIT_BREAK_CODES:
+        streak += 1
+        return streak, streak >= CIRCUIT_BREAK_STREAK
+    return 0, False
+
+
+def _paused_result(row: dict, stamp: str, error_code: str) -> TrackResult:
+    return evaluate(
+        [],
+        container=row["Container"],
+        carrier=row["Carrier"],
+        checked_at=stamp,
+        forced_status="CHECK_FAILED",
+        error_code=error_code,
+        error=(
+            f"Skipped remaining {row['Carrier']} rows after repeated "
+            f"{error_code} failures."
+        ),
+    )
 
 
 def configure_logging() -> Path:
@@ -151,10 +226,17 @@ def _cells_to_result(container: str, carrier: str, cells: dict) -> TrackResult:
 
 
 async def _track_one(
-    page, carrier: str, container: str, *, wait_for_challenge: bool = False
+    page,
+    carrier: str,
+    container: str,
+    *,
+    wait_for_challenge: bool = True,
+    browser: CarrierBrowser | None = None,
 ) -> TrackResult:
     tracker_cls = TRACKERS[carrier]
-    tracker = tracker_cls(page, wait_for_challenge=wait_for_challenge)
+    tracker = tracker_cls(
+        page, wait_for_challenge=wait_for_challenge, browser=browser
+    )
     LOGGER.info("Tracking %s %s", carrier, container)
     if container_shape_ok(container) and not iso6346_check_digit_ok(container):
         LOGGER.warning("ISO 6346 check digit failed for %s; querying anyway.", container)
@@ -166,7 +248,7 @@ async def run_single(
     container: str,
     *,
     headed: bool = False,
-    wait_for_challenge: bool = False,
+    wait_for_challenge: bool = True,
 ) -> TrackResult:
     from artifacts import checked_at
     from playwright.async_api import async_playwright
@@ -180,24 +262,18 @@ async def run_single(
             {"Container": container, "Carrier": carrier}, checked_at()
         )
     async with async_playwright() as playwright:
-        browser = await _launch_browser(playwright, headed=headed)
-        context_kwargs = {"locale": LOCALE}
-        session = session_path(carrier)
-        if session.exists():
-            context_kwargs["storage_state"] = str(session)
-        context = await browser.new_context(
-            viewport={"width": 1400, "height": 900},
-            **context_kwargs,
+        session = CarrierBrowser(
+            playwright, carrier, headed=default_headed_for(carrier, headed)
         )
-        context.set_default_timeout(CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS))
-        page = await context.new_page()
+        await session.start()
         result = await _track_one(
-            page, carrier, container, wait_for_challenge=wait_for_challenge
+            session.page,
+            carrier,
+            container,
+            wait_for_challenge=wait_for_challenge,
+            browser=session,
         )
-        session.parent.mkdir(parents=True, exist_ok=True)
-        await context.storage_state(path=str(session))
-        await context.close()
-        await browser.close()
+        await session.close()
     return result
 
 
@@ -205,7 +281,7 @@ async def run_batch(
     rows: list[dict],
     *,
     headed: bool = False,
-    wait_for_challenge: bool = False,
+    wait_for_challenge: bool = True,
     resume: bool = False,
     output_path: Path = OUTPUT_XLSX,
     previous_path: Path | None = None,
@@ -243,40 +319,24 @@ async def run_batch(
                     results[idx] = _invalid_result(rows[idx], checked_at())
                 written = write_output(written, build_output_frame(rows, results))
                 continue
-            browser = await _launch_browser(playwright, headed=headed)
-            context_kwargs = {"locale": LOCALE}
-            session = session_path(carrier)
-            if session.exists():
-                context_kwargs["storage_state"] = str(session)
-            context = await browser.new_context(
-                viewport={"width": 1400, "height": 900},
-                **context_kwargs,
+            session = CarrierBrowser(
+                playwright, carrier, headed=default_headed_for(carrier, headed)
             )
-            context.set_default_timeout(CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS))
-            page = await context.new_page()
-            isolate = carrier == "HLCU"
-            for pos, idx in enumerate(indices):
+            await session.start()
+            streak = 0
+            paused_code: str | None = None
+            for idx in indices:
                 if idx in skip_indices:
                     print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
                     continue
-                if isolate and pos > 0:
-                    await context.close()
-                    await browser.close()
-                    browser = await _launch_browser(playwright, headed=headed)
-                    context_kwargs = {"locale": LOCALE}
-                    if session.exists():
-                        context_kwargs["storage_state"] = str(session)
-                    context = await browser.new_context(
-                        viewport={"width": 1400, "height": 900},
-                        **context_kwargs,
-                    )
-                    context.set_default_timeout(
-                        CARRIER_TIMEOUT_MS.get(carrier, NAV_TIMEOUT_MS)
-                    )
-                    page = await context.new_page()
+                if paused_code:
+                    results[idx] = _paused_result(rows[idx], checked_at(), paused_code)
+                    print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
+                    written = write_output(written, build_output_frame(rows, results))
+                    continue
                 if not first:
-                    await page.wait_for_timeout(
-                        int(random.uniform(*QUERY_DELAY_SECONDS) * 1000)
+                    await session.page.wait_for_timeout(
+                        int(random.uniform(*query_delay_seconds(carrier)) * 1000)
                     )
                 first = False
                 row = rows[idx]
@@ -286,18 +346,25 @@ async def run_batch(
                     results[idx] = _invalid_result(row, checked_at())
                 else:
                     results[idx] = await _track_one(
-                        page,
+                        session.page,
                         carrier,
                         row["Container"],
                         wait_for_challenge=wait_for_challenge,
+                        browser=session,
                     )
                 print_progress(idx + 1, len(rows), results[idx])  # type: ignore[arg-type]
                 written = write_output(written, build_output_frame(rows, results))
-                if results[idx] and results[idx].success:
-                    session.parent.mkdir(parents=True, exist_ok=True)
-                    await context.storage_state(path=str(session))
-            await context.close()
-            await browser.close()
+                streak, tripped = update_circuit(
+                    streak, results[idx].error_code if results[idx] else None
+                )
+                if tripped:
+                    paused_code = results[idx].error_code if results[idx] else "CLOUDFLARE"
+                    LOGGER.info(
+                        "Pausing remaining %s rows after repeated %s",
+                        carrier,
+                        paused_code,
+                    )
+            await session.close()
 
     finalized = [item for item in results if item is not None]
     return finalized, written

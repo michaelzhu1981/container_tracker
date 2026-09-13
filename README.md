@@ -13,6 +13,8 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+系统已装 Google Chrome 时，HLCU 会优先用 Chrome 的持久资料目录（`sessions/chrome_hlcu/`），比 Playwright 自带 Chromium 更容易过 Cloudflare 的自动检查。
+
 ## 输入
 
 编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU`。不要填写 POL。
@@ -25,7 +27,6 @@ playwright install chromium
 python app.py --carrier HLCU --container HLXU1234567
 python app.py --carrier YMJA --container YMLU1234567
 python app.py --carrier HLCU --container HLXU1234567 --headed
-python app.py --carrier HLCU --container HLXU1234567 --wait-challenge
 ```
 
 批量：
@@ -38,14 +39,20 @@ python app.py input/containers.xlsx
 
 当前已实现 Hapag-Lloyd (`HLCU`) 与 Yang Ming (`YMJA`)。其余船公司会记为尚未实现。
 
-默认 headless 遇到 Cloudflare / CAPTCHA 会记失败并查下一箱，**不会绕过验证**。若要自己在浏览器里点完再继续自动查询：
+遇到 Cloudflare / CAPTCHA 时：
+
+1. 先短等非交互 JS 挑战自己消失（真实 Chrome 上常见）
+2. 失败则刷新页面再等，最多两次
+3. 仍停在挑战页，才弹出可见窗口等人点击（最多约 3 分钟）
+4. 点完后同一浏览器继续查后面的箱子，不会每箱重开
+
+HLCU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。无人值守、自动失败后不要等人：
 
 ```bash
-python app.py --carrier HLCU --container HLXU1234567 --wait-challenge
-python app.py input/containers.xlsx --wait-challenge
+python app.py input/containers.xlsx --no-wait-challenge
 ```
 
-`--wait-challenge` 会打开可见浏览器，最多等 3 分钟；点完后程序自动搜箱。同一批后面的箱子会复用这次会话。超时仍记 `CLOUDFLARE`。
+同一家连续两箱都是 `CLOUDFLARE` 或 `SELECTOR` 时，停查该家剩余行，其他船公司继续。超时仍记 `CLOUDFLARE`。
 
 ## License
 

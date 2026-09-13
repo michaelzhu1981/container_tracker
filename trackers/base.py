@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from artifacts import checked_at, html_path, relative_to_root, screenshot_path
-from config import CHALLENGE_WAIT_MS
+from config import AUTO_CHALLENGE_WAIT_MS, CHALLENGE_RETRY_DELAYS, CHALLENGE_WAIT_MS
 from models import CanonicalEvent, TimelineOrder, TrackResult
 from status_engine import evaluate
 
@@ -71,9 +71,16 @@ class BaseTracker(ABC):
     timeline_order: TimelineOrder = "oldest_first"
     tracking_url: str = ""
 
-    def __init__(self, page: Any, *, wait_for_challenge: bool = False) -> None:
+    def __init__(
+        self,
+        page: Any,
+        *,
+        wait_for_challenge: bool = True,
+        browser: Any | None = None,
+    ) -> None:
         self.page = page
         self.wait_for_challenge = wait_for_challenge
+        self.browser = browser
         self._screenshot: Path | None = None
         self._html: Path | None = None
 
@@ -121,37 +128,76 @@ class BaseTracker(ABC):
         if code == "CAPTCHA":
             raise TrackerError("CAPTCHA detected.", "CAPTCHA")
 
-    async def pass_or_wait_for_challenge(self) -> None:
-        code = challenge_code(await self._visible_text())
-        if not code:
-            return
-        if not self.wait_for_challenge:
-            self.detect_blocks(await self._visible_text())
-            return
-        seconds = CHALLENGE_WAIT_MS // 1000
-        print(
-            f"Security check ({code}) is blocking the page. "
-            f"Complete it in the browser window; tracking resumes automatically "
-            f"(timeout {seconds}s)."
-        )
-        LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
+    async def _wait_challenge_gone(self, timeout_ms: int) -> bool:
         try:
-            await self.page.wait_for_function(
-                _CHALLENGE_GONE_JS, timeout=CHALLENGE_WAIT_MS
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise TrackerError(
-                f"Timed out waiting for you to complete the {code} check.",
-                code,
-            ) from exc
+            await self.page.wait_for_function(_CHALLENGE_GONE_JS, timeout=timeout_ms)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _after_challenge_cleared(self) -> None:
         await self.page.wait_for_timeout(1000)
         await self.dismiss_cookies(wait_ms=5000)
         still = challenge_code(await self._visible_text())
         if still:
             raise TrackerError(
-                f"Timed out waiting for you to complete the {still} check.",
+                f"Timed out waiting for the {still} check to clear.",
                 still,
             )
+
+    async def _reload_tracking_page(self) -> None:
+        if not self.tracking_url:
+            return
+        try:
+            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Reload after challenge failed for %s", self.carrier_code)
+
+    async def pass_or_wait_for_challenge(self) -> None:
+        code = challenge_code(await self._visible_text())
+        if not code:
+            return
+
+        auto_s = AUTO_CHALLENGE_WAIT_MS // 1000
+        LOGGER.info("Waiting up to %ss for %s to clear automatically", auto_s, code)
+        if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
+            await self._after_challenge_cleared()
+            return
+
+        for delay in CHALLENGE_RETRY_DELAYS:
+            LOGGER.info("Retrying after %s: sleeping %.0fs then reloading", code, delay)
+            await self.page.wait_for_timeout(int(delay * 1000))
+            await self._reload_tracking_page()
+            if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
+                await self._after_challenge_cleared()
+                return
+
+        code = challenge_code(await self._visible_text()) or code
+        if self.wait_for_challenge:
+            if self.browser is not None and hasattr(self.browser, "ensure_headed"):
+                switched = await self.browser.ensure_headed()
+                if switched:
+                    self.page = self.browser.page
+                    await self._reload_tracking_page()
+                    if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
+                        await self._after_challenge_cleared()
+                        return
+            seconds = CHALLENGE_WAIT_MS // 1000
+            print(
+                f"Security check ({code}) is blocking the page. "
+                f"Complete it in the browser window; tracking resumes automatically "
+                f"(timeout {seconds}s)."
+            )
+            LOGGER.info("Waiting up to %ss for human to complete %s", seconds, code)
+            if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
+                await self._after_challenge_cleared()
+                return
+
+        still = challenge_code(await self._visible_text()) or code
+        raise TrackerError(
+            f"Timed out waiting for the {still} check to clear.",
+            still,
+        )
 
     async def save_artifacts(self, container: str) -> None:
         self._screenshot = screenshot_path(container)

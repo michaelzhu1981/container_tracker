@@ -38,8 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait-challenge",
         action="store_true",
         help=(
-            "Open a visible browser and wait if Cloudflare/CAPTCHA appears, "
-            "so you can complete the check; then continue tracking. Implies --headed."
+            "After automatic waits fail, keep a visible browser so you can "
+            "complete Cloudflare/CAPTCHA. This is already the default."
+        ),
+    )
+    parser.add_argument(
+        "--no-wait-challenge",
+        action="store_true",
+        help=(
+            "Do not wait for a human after automatic Cloudflare/CAPTCHA waits fail. "
+            "Mark the row failed and pause that carrier if it repeats."
         ),
     )
     parser.add_argument("--limit", type=int, default=None, help="Track at most N rows.")
@@ -65,9 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging()
     headed = bool(args.headed or args.wait_challenge or not HEADLESS)
-    wait_for_challenge = bool(args.wait_challenge)
-    if wait_for_challenge and not headed:
-        headed = True
+    wait_for_challenge = not bool(args.no_wait_challenge)
 
     print("Container Tracker")
     print("===================================")

@@ -45,18 +45,20 @@
 
 - 官方 API、数据库、服务器
 - 并发多 Tab
-- 绕过 CAPTCHA / Cloudflare、打码平台
+- 打码平台、伪造 Turnstile token、伪装成已过防护的流量
 - 用箱号前缀猜船公司
 - 目的港 ATA / ETA / POD（后续再议）
+
+允许处理 Cloudflare / CAPTCHA：**先自动等待**非交互 JS 挑战自行消失并复用同一 Chrome 资料目录；自动手段用尽后**才**弹窗等人点击。不把验证外包给打码服务。
 
 ### 1.3 成功标准
 
 不追求 100% 过所有反爬。
 
-- 多数箱号可 **headless 无人值守**跑完并写出 Excel
+- 多数箱号可自动跑完并写出 Excel。易出挑战的船公司（如 HLCU）默认用本机 **headed Chrome + 持久资料目录**
 - Loaded / Sailed 不以 Planned / ETD 误判
 - 驳船动态不得写成 `SAILED`
-- 被拦截的少量箱子进 `MANUAL_CHECK_REQUIRED`，事后用截图自行上网补查，而不是盯着 Playwright
+- Cloudflare：先短等 JS 挑战自己过，失败则刷新重试；仍过不去才等人点。`--no-wait-challenge` 时不等人，记 `CLOUDFLARE` 并熔断该家
 - 6 家船公司目标：约 80%–90% 查询可自动完成
 
 ### 1.4 支持船公司
@@ -502,11 +504,12 @@ Output: output/containers_result.xlsx
 ### 5.5 config.py
 
 - 全局 timeout
-- 查询间隔 2–4 秒（`random.uniform(2, 4)`）
-- 每家最大重试 1 次
+- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU）5–8 秒
+- Cloudflare 自动等待 `AUTO_CHALLENGE_WAIT_MS`（约 25s），人工兜底 `CHALLENGE_WAIT_MS`（180s）
+- 挑战未过：刷新 tracking URL 最多 2 次，间隔 5s / 15s
 - locale `en-US`
-- 默认 `headless=True`
-- session 路径 `sessions/{carrier}.json`
+- 默认 headless；`CHALLENGE_CARRIERS` 默认 headed
+- 每家持久 Chrome 资料目录 `sessions/chrome_{carrier}/`（不要每箱重开浏览器）
 - 按 Carrier 可覆盖 delay / timeout
 
 ---
@@ -516,14 +519,14 @@ Output: output/containers_result.xlsx
 ### 6.1 运行方式
 
 - 一个 Browser；Excel `groupby("Carrier")` 后**顺序**查询；不并发
-- 日常默认 headless，无人值守
-- Cookie Banner 用选择器自动关；关不掉则截图并记失败，不暂停
-- 每家独立 context + `sessions/{carrier}.json`
-- 流程：自动关 Cookie → 强制英文（若有语言开关）→ 输入箱号
-- CAPTCHA / Cloudflare：**不绕过、不打码、不暂停等人点**。该行记 `MANUAL_CHECK_REQUIRED` 或 `CHECK_FAILED`，保存截图+HTML，立刻查下一箱
-- `--headed` 只用于开发。失败必做 full-page screenshot + `page.content()`
+- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU）默认 headed + 持久资料目录
+- Cookie Banner 用选择器自动关
+- 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
+- 流程：打开 Tracking 页 → 自动等待 JS 挑战 → 关 Cookie → 输入箱号
+- CAPTCHA / Cloudflare：**先自动等、再刷新重试，用尽后才等人点**。不打码、不伪造 token。`--no-wait-challenge` 时自动失败后记 `CLOUDFLARE` / `CAPTCHA` 并熔断该家
+- `--headed` 强制所有船公司可见窗口。失败必做 full-page screenshot + `page.content()`
 
-不能承诺 6 家 100% 自动。无反爬的站点可以全自动；Hapag / Maersk / MSC 一旦出挑战，那些行进人工队列。这是合规前提下的「批量全自动 + 例外清单」。
+不能承诺 6 家 100% 自动。Hapag 等站点的非交互挑战应尽量自动过；需要点击时同一 Chrome 资料目录等人点一次，后续箱复用。连续两箱 `SELECTOR` / `CLOUDFLARE` 停查该家。
 
 ### 6.2 BaseTracker
 
@@ -649,7 +652,7 @@ V0.1 用 3–5 个真实 HLCU 箱号验收：未装船 / 已装未开 / 已开�
 
 ### 10.3 合规
 
-仅公开 Tracking 页、顺序慢查、不绕验证码、仅本地自用。站点 ToS 变化时停用对应 adapter。
+仅公开 Tracking 页、顺序慢查、仅本地自用。自动等待 Cloudflare JS 挑战、必要时真人点击；不用打码平台、不伪造防护 token。站点 ToS 变化时停用对应 adapter。
 
 ### 10.4 后续迁移（附录，不占实现篇幅）
 
@@ -665,7 +668,8 @@ V0.1 用 3–5 个真实 HLCU 箱号验收：未装船 / 已装未开 / 已开�
 - 空箱 LOAD/DEPA 不算装船开船；empty return 可作为新程边界
 - 无时刻不补 `00:00`；用页面顺序打破平局
 - 结果行 = 当前输入；Excel 锁文件则改写时间戳文件
-- 默认 headless 无人值守；不绕 CAPTCHA
+- 默认：自动过 JS 挑战，失败再等人点；`--no-wait-challenge` 才无人值守失败
+- 不用打码平台、不伪造 WAF/Turnstile token
 - 代码/注释/UI 英文；本规范中文
 
 ---
@@ -675,7 +679,7 @@ V0.1 用 3–5 个真实 HLCU 箱号验收：未装船 / 已装未开 / 已开�
 1. **驳船 vs 海船**：已定口径见第 3–4 节。网页若把驳船只写成 Vessel，仍可能误判；关键词表要在接入时用真实 HTML 补全。
 2. **境内访问**：Hapag / Maersk / MSC 从内地 Mac 可能慢、被拦或出 Cloudflare。V0.1 过不去就换 YMJA/ONEY。
 3. **真实箱号**：没有未装船 / 已装未开 / 已开船的真箱，selector 和 Actual 规则都验不了。
-4. **Headless 检测**：部分站点对无头浏览器更严。生产仍默认 headless；该行进人工队列。开发用 `--headed` 调 DOM。
+4. **Headless 检测**：部分站点对无头浏览器更严。HLCU 等默认 headed 持久 Chrome；无挑战站点仍 headless。自动等不过再等人点。
 5. **自动化边界**：不能 100% 过所有反爬。V1.0 可用 launchd/cron 定时跑成功路径。
 
 ---

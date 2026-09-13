@@ -245,7 +245,7 @@ class HapagTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=8_000)
         html = await self.page.content()
         lowered = html.lower()
-        if "checking your browser" in lowered or "managed challenge" in lowered:
+        if challenge_code(lowered):
             return
         if "outdated browser" in lowered and "container" not in lowered:
             await self.page.goto(TRACING_URL, wait_until="domcontentloaded")

@@ -11,8 +11,14 @@ LOCALE = "en-US"
 NAV_TIMEOUT_MS = 45_000
 ACTION_TIMEOUT_MS = 15_000
 QUERY_DELAY_SECONDS = (2.0, 4.0)
+CHALLENGE_QUERY_DELAY_SECONDS = (5.0, 8.0)
 MAX_RETRIES = 1
+AUTO_CHALLENGE_WAIT_MS = 25_000
 CHALLENGE_WAIT_MS = 180_000
+CHALLENGE_RETRY_DELAYS = (5.0, 15.0)
+CHALLENGE_CARRIERS = ("HLCU",)
+CIRCUIT_BREAK_CODES = frozenset({"CLOUDFLARE", "SELECTOR"})
+CIRCUIT_BREAK_STREAK = 2
 
 INPUT_XLSX = ROOT / "input" / "containers.xlsx"
 OUTPUT_XLSX = ROOT / "output" / "containers_result.xlsx"
@@ -72,3 +78,17 @@ HEADER_ALIASES = {
 
 def session_path(carrier: str) -> Path:
     return SESSION_DIR / f"{carrier.lower()}.json"
+
+
+def chrome_profile_dir(carrier: str) -> Path:
+    return SESSION_DIR / f"chrome_{carrier.lower()}"
+
+
+def query_delay_seconds(carrier: str) -> tuple[float, float]:
+    if carrier in CHALLENGE_CARRIERS:
+        return CHALLENGE_QUERY_DELAY_SECONDS
+    return QUERY_DELAY_SECONDS
+
+
+def default_headed_for(carrier: str, headed: bool) -> bool:
+    return bool(headed or carrier in CHALLENGE_CARRIERS)
