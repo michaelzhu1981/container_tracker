@@ -130,6 +130,10 @@ class YangMingTracker(BaseTracker):
     carrier_code = "YMJA"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
+    screenshot_selectors = (
+        "table[aria-label*='Container Status' i]",
+        "table[aria-label*='container' i]",
+    )
 
     async def open_page(self) -> None:
         await self.page.goto(self.tracking_url, wait_until="domcontentloaded")

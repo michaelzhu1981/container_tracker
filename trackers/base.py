@@ -30,6 +30,64 @@ COOKIE_SELECTORS = (
     "button:has-text('Allow all')",
 )
 
+_HIDE_OVERLAYS_JS = """() => {
+    const selectors = [
+        "#onetrust-banner-sdk",
+        "#onetrust-pc-sdk",
+        "#onetrust-consent-sdk",
+        ".onetrust-pc-dark-filter",
+        "[id^='onetrust']",
+        "[class*='cookie-banner' i]",
+        "[class*='CookieBanner']",
+        "[id*='cookie-banner' i]",
+        ".q-dialog",
+        "[role='dialog']",
+        "[class*='login-modal' i]",
+        "[class*='signin' i][class*='modal' i]",
+    ];
+    for (const selector of selectors) {
+        try {
+            document.querySelectorAll(selector).forEach((el) => {
+                el.style.setProperty("display", "none", "important");
+                el.style.setProperty("visibility", "hidden", "important");
+            });
+        } catch (err) {}
+    }
+}"""
+
+_NO_SCREENSHOT_CODES = frozenset({"CLOUDFLARE", "CAPTCHA"})
+
+_QUERY_PAGE_MARKERS = (
+    "hal-event",
+    "latest event",
+    "container status",
+    "shipment details",
+    "tracking details",
+    "on board",
+    "gated in",
+    "vessel departed",
+    "cargo tracking",
+)
+
+
+def is_query_screenshot_page(text: str, html: str = "") -> bool:
+    """True when the page shows container tracking results, not login/cookie/CF."""
+    if challenge_code(text) or challenge_code(html):
+        return False
+    blob = f"{text}\n{html}".lower()
+    cookie_only = (
+        ("cookie" in blob or "onetrust" in blob)
+        and not any(marker in blob for marker in _QUERY_PAGE_MARKERS)
+    )
+    login_only = (
+        ("log in" in blob or "sign in" in blob or "login" in blob)
+        and not any(marker in blob for marker in _QUERY_PAGE_MARKERS)
+    )
+    if cookie_only or login_only:
+        return False
+    return any(marker in blob for marker in _QUERY_PAGE_MARKERS)
+
+
 _CHALLENGE_GONE_JS = """() => {
     const text = (document.body && document.body.innerText || "").toLowerCase();
     const html = (document.documentElement && document.documentElement.innerHTML || "").toLowerCase();
@@ -70,6 +128,7 @@ class BaseTracker(ABC):
     carrier_code: str = ""
     timeline_order: TimelineOrder = "oldest_first"
     tracking_url: str = ""
+    screenshot_selectors: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -199,19 +258,56 @@ class BaseTracker(ABC):
             still,
         )
 
-    async def save_artifacts(self, container: str) -> None:
-        self._screenshot = screenshot_path(container)
+    async def prepare_for_screenshot(self) -> None:
+        await self.dismiss_cookies(wait_ms=1500)
+        dismiss_onboarding = getattr(self, "dismiss_onboarding", None)
+        if callable(dismiss_onboarding):
+            try:
+                await dismiss_onboarding()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await self.page.evaluate(_HIDE_OVERLAYS_JS)
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not hide overlays before screenshot for %s", self.carrier_code)
+
+    async def _screenshot_query_content(self, path: Path) -> bool:
+        for selector in self.screenshot_selectors:
+            locator = self.page.locator(selector)
+            try:
+                if await locator.first.is_visible(timeout=800):
+                    await locator.first.screenshot(path=str(path))
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    async def save_artifacts(self, container: str, *, allow_screenshot: bool = True) -> None:
+        self._screenshot = None
         self._html = html_path(container)
         try:
-            await self.page.screenshot(path=str(self._screenshot), full_page=True)
-        except Exception:  # noqa: BLE001
-            LOGGER.exception("Screenshot failed for %s", container)
-            self._screenshot = None
-        try:
-            self._html.write_text(await self.page.content(), encoding="utf-8")
+            html = await self.page.content()
+            self._html.write_text(html, encoding="utf-8")
         except Exception:  # noqa: BLE001
             LOGGER.exception("HTML save failed for %s", container)
             self._html = None
+            html = ""
+        if not allow_screenshot:
+            return
+        text = await self._visible_text()
+        if not is_query_screenshot_page(text, html):
+            LOGGER.info("Skipping screenshot for %s; page is not a tracking result.", container)
+            return
+        await self.prepare_for_screenshot()
+        shot = screenshot_path(container)
+        try:
+            if not await self._screenshot_query_content(shot):
+                await self.page.screenshot(path=str(shot), full_page=False)
+            self._screenshot = shot
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Screenshot failed for %s", container)
+            self._screenshot = None
+            shot.unlink(missing_ok=True)
 
     @abstractmethod
     async def open_page(self) -> None: ...
@@ -272,7 +368,10 @@ class BaseTracker(ABC):
                 html_path=relative_to_root(self._html),
             )
         except TrackerError as exc:
-            await self.save_artifacts(container)
+            await self.save_artifacts(
+                container,
+                allow_screenshot=exc.code not in _NO_SCREENSHOT_CODES,
+            )
             status = "MANUAL_CHECK_REQUIRED" if exc.code in {"CAPTCHA"} else "CHECK_FAILED"
             if exc.code == "CLOUDFLARE":
                 status = "CHECK_FAILED"

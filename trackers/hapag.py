@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from event_text import (
@@ -15,6 +16,15 @@ from html_tables import parse_tables
 from models import CanonicalEvent
 from ports import normalize_key
 from trackers.base import BaseTracker, TrackerError, challenge_code
+
+LOGGER = logging.getLogger("container_tracker")
+
+_EXPAND_BUTTON = (
+    "table:has-text('Latest Event') tbody tr.q-tr--hal:visible "
+    "button.q-btn--icon-only"
+)
+_EXPAND_ROW = "table:has-text('Latest Event') tbody tr.q-tr--hal:visible"
+_DETAILS = ".hal-event-tracking"
 
 TRACK_URL = (
     "https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html"
@@ -193,6 +203,35 @@ class HapagTracker(BaseTracker):
     carrier_code = "HLCU"
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
+    screenshot_selectors = (
+        ".hal-event-tracking",
+        "table:has-text('Latest Event')",
+    )
+
+    async def expand_result_details(self) -> None:
+        """Open the right-hand chevron so movement details are visible."""
+        details = self.page.locator(_DETAILS)
+        try:
+            if await details.first.is_visible(timeout=400):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        for selector in (_EXPAND_BUTTON, _EXPAND_ROW):
+            target = self.page.locator(selector)
+            try:
+                if not await target.first.is_visible(timeout=1500):
+                    continue
+                await target.first.click(timeout=3_000)
+                await details.first.wait_for(state="visible", timeout=8_000)
+                await self.page.wait_for_timeout(400)
+                return
+            except Exception:  # noqa: BLE001
+                continue
+        LOGGER.info("Hapag result details stayed collapsed; screenshot may lack events.")
+
+    async def prepare_for_screenshot(self) -> None:
+        await self.expand_result_details()
+        await super().prepare_for_screenshot()
 
     async def dismiss_onboarding(self) -> None:
         """Close the Tracking Beta welcome tour so the search field is actionable."""

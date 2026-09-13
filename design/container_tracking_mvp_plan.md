@@ -445,7 +445,7 @@ HLXU1234567 | HLCU | YANTIAN | SAILED | YES | YES | MONTEVIDEO EXPRESS | 2632E |
 
 | 类型 | 路径 |
 |---|---|
-| 截图 | `screenshots/{CONTAINER}_{YYYYMMDD}_{HHMMSS}.png` |
+| 截图 | `screenshots/{CONTAINER}_{YYYYMMDD}_{HHMMSS}.png`，只截箱号查询结果区域（事件表 / Latest Event）。Cookie 横幅、登录框、Cloudflare 挑战页不进该目录 |
 | HTML | `logs/html/{CONTAINER}_{YYYYMMDD}_{HHMMSS}.html` |
 | 运行日志 | `logs/run_{YYYYMMDD}_{HHMMSS}.log`（英文） |
 
@@ -524,7 +524,7 @@ Output: output/containers_result.xlsx
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
 - 流程：打开 Tracking 页 → 自动等待 JS 挑战 → 关 Cookie → 输入箱号
 - CAPTCHA / Cloudflare：**先自动等、再刷新重试，用尽后才等人点**。不打码、不伪造 token。`--no-wait-challenge` 时自动失败后记 `CLOUDFLARE` / `CAPTCHA` 并熔断该家
-- `--headed` 强制所有船公司可见窗口。失败必做 full-page screenshot + `page.content()`
+- `--headed` 强制所有船公司可见窗口。查询结果页才截图（结果区域，不含登录/cookie）；Cloudflare 页只留 HTML。失败仍保存 `page.content()`
 
 不能承诺 6 家 100% 自动。Hapag 等站点的非交互挑战应尽量自动过；需要点击时同一 Chrome 资料目录等人点一次，后续箱复用。连续两箱 `SELECTOR` / `CLOUDFLARE` 停查该家。
 

@@ -1,7 +1,8 @@
+import asyncio
 from pathlib import Path
 
 from status_engine import evaluate
-from trackers.hapag import parse_hapag_html
+from trackers.hapag import HapagTracker, parse_hapag_html
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hapag"
 
@@ -77,3 +78,47 @@ def test_parse_barge_only_fixture():
     )
     assert result.status == "NOT_LOADED"
     assert result.sailed is False
+
+
+class _ExpandLocator:
+    def __init__(self, page: "_ExpandPage", selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_ExpandLocator":
+        return self
+
+    async def is_visible(self, timeout: int = 0) -> bool:
+        if "hal-event-tracking" in self.selector:
+            return self.page.details_visible
+        return "Latest Event" in self.selector
+
+    async def click(self, timeout: int = 0) -> None:
+        self.page.clicks.append(self.selector)
+        self.page.details_visible = True
+
+    async def wait_for(self, state: str | None = None, timeout: int = 0) -> None:
+        if state == "visible" and "hal-event-tracking" in self.selector:
+            if not self.page.details_visible:
+                raise TimeoutError("details still collapsed")
+
+
+class _ExpandPage:
+    def __init__(self) -> None:
+        self.details_visible = False
+        self.clicks: list[str] = []
+
+    def locator(self, selector: str) -> _ExpandLocator:
+        return _ExpandLocator(self, selector)
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+
+def test_expand_result_details_clicks_chevron_before_screenshot():
+    page = _ExpandPage()
+    tracker = HapagTracker(page)
+    asyncio.run(tracker.expand_result_details())
+    assert page.details_visible is True
+    assert any("q-btn--icon-only" in selector for selector in page.clicks)

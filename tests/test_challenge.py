@@ -2,7 +2,12 @@ import asyncio
 
 import pytest
 
-from trackers.base import BaseTracker, TrackerError, challenge_code
+from trackers.base import (
+    BaseTracker,
+    TrackerError,
+    challenge_code,
+    is_query_screenshot_page,
+)
 
 
 def test_cloudflare_visible_text():
@@ -19,6 +24,29 @@ def test_captcha_visible_text():
 def test_normal_tracking_page_is_not_a_challenge():
     assert challenge_code("Cargo Tracking\nSearch\nContainer No.") is None
     assert challenge_code("Cookie Policy and Cloudflare CDN mention") is None
+
+
+def test_query_screenshot_keeps_tracking_results_only():
+    assert is_query_screenshot_page(
+        "Latest Event\nLoaded SALALAH",
+        '<div class="hal-event-tracking"></div>',
+    )
+    assert is_query_screenshot_page(
+        "Container Status\nOn Board VUNG TAU",
+        "<table aria-label='Container Status Information'></table>",
+    )
+    assert not is_query_screenshot_page(
+        "checking your browser\nVerify you are human",
+        "<html>Security Check</html>",
+    )
+    assert not is_query_screenshot_page(
+        "This website uses cookies. Agree",
+        '<div id="onetrust-banner-sdk">Cookie Policy</div>',
+    )
+    assert not is_query_screenshot_page(
+        "Log in to your account\nSign in",
+        "<form>login</form>",
+    )
 
 
 class _Invisible:
@@ -64,6 +92,9 @@ class FakePage:
             return True
         raise TimeoutError("still challenged")
 
+    async def screenshot(self, path=None, full_page=False, clip=None):
+        raise AssertionError("screenshot should not run on a non-query page")
+
 
 class DummyTracker(BaseTracker):
     carrier_code = "HLCU"
@@ -108,6 +139,17 @@ def test_human_wait_used_after_auto_fails(monkeypatch):
     asyncio.run(tracker.pass_or_wait_for_challenge())
     assert page.calls == 2
     assert challenge_code(page.text) is None
+
+
+def test_save_artifacts_skips_screenshot_on_cloudflare_page(tmp_path, monkeypatch):
+    monkeypatch.setattr("trackers.base.html_path", lambda container: tmp_path / f"{container}.html")
+    monkeypatch.setattr("trackers.base.screenshot_path", lambda container: tmp_path / f"{container}.png")
+    page = FakePage(text="checking your browser\nVerify you are human")
+    tracker = DummyTracker(page)
+    asyncio.run(tracker.save_artifacts("HLXU1234567"))
+    assert tracker._screenshot is None
+    assert not (tmp_path / "HLXU1234567.png").exists()
+    assert (tmp_path / "HLXU1234567.html").exists()
 
 
 def test_no_human_fallback_raises_after_auto_fails(monkeypatch):

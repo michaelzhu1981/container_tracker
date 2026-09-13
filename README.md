@@ -35,7 +35,7 @@ python app.py --carrier HLCU --container HLXU1234567 --headed
 python app.py input/containers.xlsx
 ```
 
-结果写入 `output/containers_result.xlsx`。失败截图在 `screenshots/`，页面 HTML 在 `logs/html/`。
+结果写入 `output/containers_result.xlsx`。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。完整 HTML 在 `logs/html/`。
 
 当前已实现 Hapag-Lloyd (`HLCU`) 与 Yang Ming (`YMJA`)。其余船公司会记为尚未实现。
 
