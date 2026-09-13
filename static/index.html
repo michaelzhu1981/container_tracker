@@ -267,12 +267,12 @@
         <div id="optTip" class="opt-tip" hidden></div>
       </div>
       <div class="controls" style="margin-top:10px">
-        <span class="sub has-tip" data-tip="Choose which carriers to query when you start a job. This does not filter the table. All selected or none selected queries every carrier.">Carriers</span>
+        <span class="sub has-tip" data-tip="Choose which carriers to query when you start a job. Clicking a summary row also selects that carrier here. All selected or none selected queries every carrier.">Carriers</span>
         <div id="carrierChips" class="carriers"></div>
       </div>
     </div>
     <div id="dash" class="dash" hidden>
-      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to filter the table; click again to show all carriers.">Summary by carrier</div>
+      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to filter the table and select that carrier above; click again to show all carriers.">Summary by carrier</div>
       <table>
         <thead>
           <tr>
@@ -399,10 +399,26 @@
       return `<a href="/screenshots/${encodeURIComponent(name)}" target="_blank" rel="noreferrer">shot</a>`;
     }
 
+    function selectedChipCodes() {
+      return [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
+    }
+
     function selectedCarriers() {
-      const on = [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
+      const on = selectedChipCodes();
       if (!on.length || on.length === knownCarriers.length) return null;
       return on;
+    }
+
+    function setChipSelection(codes) {
+      const selectAll = !codes || !codes.length || codes.length === knownCarriers.length;
+      const want = new Set(selectAll ? knownCarriers : codes);
+      chipsEl.querySelectorAll(".chip").forEach((el) => {
+        el.classList.toggle("on", want.has(el.dataset.carrier));
+      });
+    }
+
+    function syncChipsToCarrierFilter() {
+      setChipSelection(carrierFilter ? [carrierFilter] : knownCarriers);
     }
 
     function countCell(value) {
@@ -525,6 +541,7 @@
           ? [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier)
           : carriers
       );
+      carriers = [...carriers].sort((a, b) => a.localeCompare(b));
       chipsEl.innerHTML = carriers.map((code) =>
         `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}" data-tip="Query ${code} boxes when you start a job. Does not hide rows in the table.">${code}</button>`
       ).join("");
@@ -545,7 +562,7 @@
       pathsEl.textContent = `Input ${job.input || "—"} · Output ${job.output || "—"} · ${done}/${total}`;
 
       if (data.carriers && data.carriers.length) {
-        const incoming = data.carriers;
+        const incoming = [...data.carriers].sort((a, b) => a.localeCompare(b));
         const unchanged =
           incoming.length === knownCarriers.length &&
           incoming.every((code, index) => code === knownCarriers[index]);
@@ -557,6 +574,7 @@
             prevOn.length < knownCarriers.length;
           knownCarriers = incoming;
           renderChips(incoming, keepSelection);
+          if (carrierFilter) syncChipsToCarrierFilter();
         }
       }
 
@@ -682,6 +700,7 @@
       const row = event.target.closest("[data-carrier]");
       if (!row) return;
       carrierFilter = carrierFilter === row.dataset.carrier ? "" : row.dataset.carrier;
+      syncChipsToCarrierFilter();
       page = 1;
       refresh();
     });

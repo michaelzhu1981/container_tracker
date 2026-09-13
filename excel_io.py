@@ -197,7 +197,7 @@ def create_input_template(path: Path | None = None) -> Path:
     instructions = workbook.create_sheet("Instructions")
     lines = (
         "Paste container numbers into column A starting at row 2.",
-        "Type a Carrier code in column B for each row: HLCU, YMJA, ONEY, MAEU, MSCU, CMDU, OOLU, HDMU, COSU, or ZIMU.",
+        "Type a Carrier code in column B for each row: CMDU, COSU, HDMU, HLCU, MAEU, MSCU, ONEY, OOLU, YMJA, or ZIMU.",
         "Save this file, then run: python app.py input/containers.xlsx",
         "Do not fill POL. The program infers POL from the latest ocean journey.",
     )

@@ -36,15 +36,15 @@ SESSION_DIR = ROOT / "sessions"
 PORTS_YAML = ROOT / "data" / "ports.yaml"
 
 SUPPORTED_CARRIERS = (
+    "CMDU",
+    "COSU",
+    "HDMU",
     "HLCU",
-    "YMJA",
-    "ONEY",
     "MAEU",
     "MSCU",
-    "CMDU",
+    "ONEY",
     "OOLU",
-    "HDMU",
-    "COSU",
+    "YMJA",
     "ZIMU",
 )
 

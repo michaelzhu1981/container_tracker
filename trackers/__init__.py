@@ -10,14 +10,14 @@ from trackers.yangming import YangMingTracker
 from trackers.zim import ZimTracker
 
 TRACKERS = {
+    "CMDU": CmaTracker,
+    "COSU": CoscoTracker,
+    "HDMU": HmmTracker,
     "HLCU": HapagTracker,
-    "YMJA": YangMingTracker,
-    "ONEY": OneTracker,
     "MAEU": MaerskTracker,
     "MSCU": MscTracker,
-    "CMDU": CmaTracker,
+    "ONEY": OneTracker,
     "OOLU": OoclTracker,
-    "HDMU": HmmTracker,
-    "COSU": CoscoTracker,
+    "YMJA": YangMingTracker,
     "ZIMU": ZimTracker,
 }
