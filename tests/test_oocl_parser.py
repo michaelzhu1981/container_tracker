@@ -46,6 +46,31 @@ def test_parse_sailed_fixture():
     assert result.vessel == "OOCL SHANGHAI"
 
 
+def test_parse_control_tower_details_uses_haiphong_departure():
+    html = (FIXTURES / "control_tower_sailed.html").read_text(encoding="utf-8")
+    events = parse_oocl_html(html)
+    types = [event.type for event in events]
+    assert "DEPA" in types
+    assert "LOAD" in types
+    assert "DISC" in types
+    departure = next(event for event in events if event.type == "DEPA")
+    assert departure.event_date == "2026-08-13"
+    assert departure.event_time == "05:18"
+    assert "Hai Phong" in departure.location_raw or "Haiphong" in departure.location_raw
+    assert departure.transport_mode in {"VESSEL", "MOTHER"}
+    result = evaluate(
+        events,
+        container="FCIU9142480",
+        carrier="OOLU",
+        timeline_order="newest_first",
+        checked_at="2026-09-14 00:00:00",
+    )
+    assert result.status == "SAILED"
+    assert result.pol == "HAI PHONG"
+    assert result.atd == "2026-08-13 05:18"
+    assert result.sailed is True
+
+
 def test_parse_on_board_waiting():
     html = (FIXTURES / "on_board_waiting.html").read_text(encoding="utf-8")
     events = parse_oocl_html(html)

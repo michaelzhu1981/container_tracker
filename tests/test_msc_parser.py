@@ -127,6 +127,6 @@ def test_inbound_voyage_suffix_change_after_long_transit_is_sailed():
         checked_at="2026-09-13 21:06:41",
     )
     assert result.status == "SAILED"
-    assert result.pol in {"HAIPHONG", "HAIPHONG VN"}
+    assert result.pol == "HAI PHONG"
     assert result.vessel == "ZIM MOUNT KILIMANJARO"
     assert result.atd == "2026-07-28"

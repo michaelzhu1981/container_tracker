@@ -571,7 +571,7 @@ def test_long_ocean_voyage_keeps_export_load_when_inbound_voyage_changes():
     assert result.status == "SAILED"
     assert result.loaded is True
     assert result.sailed is True
-    assert result.pol in {"HAIPHONG", "HAIPHONG VN"}
+    assert result.pol == "HAI PHONG"
     assert result.vessel == "ZIM MOUNT KILIMANJARO"
     assert result.voyage == "12E"
     assert result.atd == "2026-07-28"

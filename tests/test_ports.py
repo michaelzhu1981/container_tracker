@@ -22,3 +22,10 @@ def test_vung_tau_and_yantian_terminal_aliases():
 def test_shanghai_and_ningbo_aliases():
     assert display_port("Shanghai, CN") == "SHANGHAI"
     assert display_port("NINGBO, ZHEJIANG, CHINA") == "NINGBO"
+
+
+def test_hai_phong_terminal_alias():
+    assert display_port(
+        "Haiphong International Container Terminal Company LtdHai Phong"
+    ) == "HAI PHONG"
+    assert display_port("Hai Phong, Vietnam") == "HAI PHONG"

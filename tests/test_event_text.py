@@ -27,6 +27,7 @@ def test_one_and_msc_event_types():
     assert classify_event_type("Export Truck Gate In to Terminal") == "GTIN"
     assert classify_event_type("Export Empty Container Released") == "GTOT"
     assert classify_event_type("Laden Return") == "GTIN"
+    assert classify_event_type("Departure") == "DEPA"
 
 
 def test_parse_one_and_msc_dates():

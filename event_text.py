@@ -108,7 +108,7 @@ def classify_event_type(text: str) -> EventType:
         return "GTIN"
     if any(k in blob for k in ("vessel departed", "vessel departure", "sailed")):
         return "DEPA"
-    if re.search(r"\bdeparted\b", blob) and "gate" not in blob:
+    if re.search(r"\bdepart(?:ed|ure)s?\b", blob) and "gate" not in blob:
         return "DEPA"
     if any(k in blob for k in ("unloaded", "discharged")):
         return "DISC"

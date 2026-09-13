@@ -208,7 +208,16 @@ def _cell_text(row: list[dict], index: int | None) -> str:
 
 def _voyage_and_vessel(mode_text: str) -> tuple[str | None, str | None]:
     blob = " ".join(mode_text.split())
-    if not blob or blob.lower() in {"vessel", "barge", "truck", "rail"}:
+    if not blob or blob.lower() in {
+        "vessel",
+        "barge",
+        "truck",
+        "rail",
+        "ocean",
+        "ocean vessel",
+        "inbound",
+        "outbound",
+    }:
         return None, None
     match = _VOYAGE_RE.search(blob)
     voyage = match.group(1).upper() if match else None
@@ -310,28 +319,96 @@ def _events_from_json(payload: object) -> list[CanonicalEvent]:
     return events
 
 
-def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
+def _is_summary_headers(headers: list[str]) -> bool:
+    blob = " ".join(headers).lower()
+    return "latest event" in blob or ("container no" in blob and "action" in blob)
+
+
+def _with_stage_column(headers: list[str], mapping: dict[str, int]) -> dict[str, int]:
+    merged = dict(mapping)
+    if "stage" not in merged:
+        for idx, header in enumerate(headers):
+            if "stage" in header.lower():
+                merged["stage"] = idx
+                break
+    if "transport" not in merged and len(headers) >= 5:
+        merged["transport"] = 4
+    return merged
+
+
+def _looks_like_detail_data_row(row: list[dict]) -> bool:
+    status = _cell_text(row, 0)
+    if status.lower() in _SKIP_STATUS or status.lower() == "event":
+        return False
+    _, day, _ = parse_timestamp(_cell_text(row, 1))
+    return bool(day)
+
+
+def _events_from_mapped_rows(
+    rows: list[list[dict]], mapping: dict[str, int], start: int = 0
+) -> list[CanonicalEvent]:
     events: list[CanonicalEvent] = []
+    for row in rows:
+        transport = " ".join(
+            part
+            for part in (
+                _cell_text(row, mapping.get("stage")),
+                _cell_text(row, mapping.get("transport")),
+            )
+            if part
+        )
+        event = _event_from_fields(
+            status=_cell_text(row, mapping.get("status")),
+            date_text=_cell_text(row, mapping.get("date")),
+            location=_cell_text(row, mapping.get("location")),
+            transport=transport,
+            sequence=start + len(events),
+        )
+        if event:
+            events.append(event)
+    return events
+
+
+def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
+    details: list[CanonicalEvent] = []
+    summary: list[CanonicalEvent] = []
+    pending: dict[str, int] | None = None
+    default_detail = {
+        "status": 0,
+        "date": 1,
+        "location": 2,
+        "stage": 3,
+        "transport": 4,
+    }
     for table in parse_tables(html):
-        if len(table) < 2:
+        if not table:
             continue
         headers = [cell["text"] for cell in table[0]]
-        mapping = _header_index(headers)
-        if "status" not in mapping or "date" not in mapping:
+        if _is_summary_headers(headers):
+            mapping = _header_index(headers)
+            if "status" in mapping and "date" in mapping and len(table) > 1:
+                summary.extend(_events_from_mapped_rows(table[1:], mapping, len(summary)))
+            pending = None
             continue
-        for row in table[1:]:
-            event = _event_from_fields(
-                status=_cell_text(row, mapping.get("status")),
-                date_text=_cell_text(row, mapping.get("date")),
-                location=_cell_text(row, mapping.get("location")),
-                transport=_cell_text(row, mapping.get("transport")),
-                sequence=len(events),
+        mapping = _header_index(headers)
+        if (
+            "status" in mapping
+            and "date" in mapping
+            and not _looks_like_detail_data_row(table[0])
+        ):
+            mapping = _with_stage_column(headers, mapping)
+            if len(table) == 1:
+                pending = mapping
+                continue
+            details.extend(_events_from_mapped_rows(table[1:], mapping, len(details)))
+            pending = None
+            continue
+        if pending or _looks_like_detail_data_row(table[0]):
+            details.extend(
+                _events_from_mapped_rows(table, pending or default_detail, len(details))
             )
-            if event:
-                events.append(event)
-        if events:
-            break
-    return events
+            pending = None
+    return details or summary
 
 
 def oocl_popup_url(container: str) -> str:
@@ -410,6 +487,7 @@ class OoclTracker(BaseTracker):
     tracking_url = TRACK_URL
     screenshot_selectors = (
         "table:has-text('Vessel Departed')",
+        "table:has-text('Departure')",
         "table:has-text('Event')",
         "table:has-text('Dynamic Node')",
         "table:has-text('Container Movement')",
@@ -848,8 +926,10 @@ class OoclTracker(BaseTracker):
                 "dynamic node",
                 "container movement",
                 "cargo tracking result",
+                "tracking result",
                 "view details",
                 "show details",
+                "gate out",
             )
         ) and "unrecognized" not in text
 
@@ -864,8 +944,10 @@ class OoclTracker(BaseTracker):
                         text.includes("vessel departure") ||
                         text.includes("dynamic node") ||
                         text.includes("container movement") ||
+                        text.includes("tracking result") ||
                         text.includes("view details") ||
                         text.includes("show details") ||
+                        text.includes("gate out") ||
                         text.includes("unrecognized") ||
                         text.includes("no result") ||
                         text.includes("no tracking") ||
