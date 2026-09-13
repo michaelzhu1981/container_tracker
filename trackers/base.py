@@ -45,6 +45,8 @@ COOKIE_SELECTORS = (
     "button.coi-banner__accept",
     "button:has-text('接受所有 Cookie')",
     "button:has-text('Accept All Cookies')",
+    "#allowAll",
+    "#cookieModal button:has-text('Accept All')",
     "button.onetrust-close-btn-handler",
     "#onetrust-close-btn-container button",
 )

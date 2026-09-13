@@ -51,6 +51,12 @@ _JSON_VOY_KEYS = ("voyage", "voyageno", "voy")
 
 _VOYAGE_RE = re.compile(r"\b(\d{2,4}[A-Z])\b", re.I)
 _SKIP_STATUS = frozenset({"", "event", "status", "activity", "movement", "dynamic node"})
+_SEARCH_FIELD_SELECTORS = (
+    "#SEARCH_NUMBER",
+    "input[name='SEARCH_NUMBER']",
+    "input[placeholder*='Container' i]",
+    ".function-input input.filter-input",
+)
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -240,6 +246,23 @@ class OoclTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=12_000)
 
     async def _select_container_search(self) -> None:
+        toggle = self.page.locator("button[data-id='ooclCargoSelector']")
+        try:
+            if await toggle.first.is_visible(timeout=1_200):
+                label = (await toggle.first.inner_text()).lower()
+                if "container" in label:
+                    await self._set_search_type("cont")
+                    return
+                await toggle.first.click()
+                option = self.page.locator(
+                    ".dropdown-menu.open a:has-text('Container #'), "
+                    "a:has-text('Container #')"
+                )
+                await option.first.click(timeout=2_000)
+                await self._set_search_type("cont")
+                return
+        except Exception:  # noqa: BLE001
+            pass
         for selector in (
             "#ooclCargoSelector",
             "select[name='ooclCargoSelector']",
@@ -247,57 +270,77 @@ class OoclTracker(BaseTracker):
         ):
             locator = self.page.locator(selector)
             try:
-                if await locator.first.is_visible(timeout=1_500):
-                    await locator.first.select_option(label="Container #")
-                    return
+                await locator.first.select_option(label="Container #")
+                await self._set_search_type("cont")
+                return
             except Exception:  # noqa: BLE001
                 try:
-                    await locator.first.select_option(value="containerNumber")
+                    await locator.first.select_option(value="cont")
+                    await self._set_search_type("cont")
                     return
                 except Exception:  # noqa: BLE001
                     continue
-        option = self.page.get_by_role("option", name="Container #")
+        await self._set_search_type("cont")
+
+    async def _set_search_type(self, value: str) -> None:
         try:
-            if await option.first.is_visible(timeout=600):
-                await option.first.click()
+            await self.page.evaluate(
+                """(value) => {
+                    const type = document.getElementById("searchType");
+                    if (type) type.value = value;
+                    const select = document.getElementById("ooclCargoSelector");
+                    if (select) select.value = value;
+                }""",
+                value,
+            )
         except Exception:  # noqa: BLE001
             pass
+
+    async def _first_visible_search_field(self):
+        for selector in _SEARCH_FIELD_SELECTORS:
+            locator = self.page.locator(selector)
+            try:
+                if await locator.first.is_visible(timeout=1_500):
+                    return locator
+            except Exception:  # noqa: BLE001
+                continue
+        locator = self.page.locator("#SEARCH_NUMBER")
+        try:
+            await locator.first.wait_for(state="attached", timeout=3_000)
+            await locator.first.scroll_into_view_if_needed()
+            return locator
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _open_express_link(self, container: str) -> None:
+        await self.page.goto(
+            EXPRESS_LINK.format(number=quote(container)),
+            wait_until="domcontentloaded",
+        )
+        await self.dismiss_cookies(wait_ms=0)
 
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self.dismiss_cookies(wait_ms=0)
         await self._select_container_search()
-        field = self.page.locator(
-            "#SEARCH_NUMBER, input[name='SEARCH_NUMBER'], "
-            "input[placeholder*='Container' i], input[type='text']"
-        )
-        try:
-            await field.first.wait_for(state="visible", timeout=12_000)
-        except Exception as exc:  # noqa: BLE001
+        field = await self._first_visible_search_field()
+        if field is None:
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
             await self._select_container_search()
-            field = self.page.locator(
-                "#SEARCH_NUMBER, input[name='SEARCH_NUMBER'], "
-                "input[placeholder*='Container' i], input[type='text']"
-            )
-            try:
-                await field.first.wait_for(state="visible", timeout=12_000)
-            except Exception as retry_exc:  # noqa: BLE001
-                raise TrackerError(
-                    "Could not find the container search field.", "SELECTOR"
-                ) from retry_exc
+            field = await self._first_visible_search_field()
+        if field is None:
+            await self._open_express_link(container)
+            self._search_submitted = True
+            await self._wait_for_results()
+            return
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
         await self._submit_search()
         self._search_submitted = True
         if not await self._has_tracking_result() and not await self._page_challenge_code():
-            await self.page.goto(
-                EXPRESS_LINK.format(number=quote(container)),
-                wait_until="domcontentloaded",
-            )
-            await self.dismiss_cookies(wait_ms=0)
+            await self._open_express_link(container)
         await self._wait_for_results()
 
     async def _submit_search(self) -> None:
