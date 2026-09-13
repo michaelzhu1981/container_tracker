@@ -40,6 +40,8 @@ COOKIE_SELECTORS = (
     "button:has-text('I agree')",
     "button:has-text('Allow all')",
     "button:has-text('Allow All')",
+    "button:has-text('允许全部')",
+    "button:has-text('允许所有')",
     "button.coi-banner__accept",
     "button:has-text('接受所有 Cookie')",
     "button:has-text('Accept All Cookies')",
@@ -91,6 +93,11 @@ _NO_RESULT_TOKENS = (
     "couldn't find any shipment",
     "could not find any shipment",
     "no shipments found",
+    "container no. is invalid",
+    "container number is invalid",
+    "invalid container no",
+    "unrecognized page request",
+    "page request is unrecognized",
 )
 
 _QUERY_PAGE_MARKERS = (
@@ -114,6 +121,12 @@ _QUERY_PAGE_MARKERS = (
     "msc-flow-tracking__step",
     "gridtrackingdetails",
     "total 1 result",
+    "shipment history",
+    "dynamic node",
+    "vessel departure from first pol",
+    "vessel departure from pol",
+    "display previous moves",
+    "unit activity",
 )
 
 

@@ -78,6 +78,8 @@ def test_one_i18n_bundle_is_not_treated_as_no_result():
     assert not looks_like_no_result(visible)
     assert looks_like_no_result("No Results Found\nPlease modify your search.")
     assert looks_like_no_result("Can't identify your input")
+    assert looks_like_no_result("Container No. is invalid")
+    assert looks_like_no_result("Your page request is unrecognized")
 
 
 def test_cma_provisional_moves_disclaimer_is_not_no_result():
@@ -119,6 +121,18 @@ def test_query_screenshot_keeps_tracking_results_only():
     assert is_query_screenshot_page(
         "Gate In Full\nVessel Departed",
         "<table><tr><td>Loaded</td></tr></table>",
+    )
+    assert is_query_screenshot_page(
+        "Shipment History\nVessel Departure from POL",
+        '<div id="shipmentProgress"></div>',
+    )
+    assert is_query_screenshot_page(
+        "Dynamic Node\nVessel departure from First POL",
+        "<table><tr><td>Event Time</td></tr></table>",
+    )
+    assert is_query_screenshot_page(
+        "Unit activity\nVessel Departure",
+        '<div class="unitActivityList"></div>',
     )
     assert not is_query_screenshot_page(
         "checking your browser\nVerify you are human",

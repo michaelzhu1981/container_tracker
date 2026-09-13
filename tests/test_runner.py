@@ -24,6 +24,10 @@ def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("MAEU") is True
     assert unlocks_in_current_browser("HLCU") is True
     assert unlocks_in_current_browser("MSCU") is False
+    assert unlocks_in_current_browser("OOLU") is True
+    assert unlocks_in_current_browser("ZIMU") is True
+    assert unlocks_in_current_browser("HDMU") is False
+    assert unlocks_in_current_browser("COSU") is False
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("MAEU") is False
     assert uses_system_chrome("HLCU") is True
@@ -67,22 +71,34 @@ def test_challenge_carrier_defaults():
     assert default_headed_for("MSCU", False) is True
     assert default_headed_for("MAEU", False) is True
     assert default_headed_for("CMDU", False) is True
+    assert default_headed_for("OOLU", False) is True
+    assert default_headed_for("ZIMU", False) is True
     assert default_headed_for("ONEY", False) is False
     assert default_headed_for("YMJA", False) is False
+    assert default_headed_for("HDMU", False) is False
+    assert default_headed_for("COSU", False) is False
     assert default_headed_for("YMJA", True) is True
     assert chrome_profile_dir("HLCU").name == "chrome_hlcu"
     hlcu_lo, hlcu_hi = query_delay_seconds("HLCU")
     mscu_lo, mscu_hi = query_delay_seconds("MSCU")
     maeu_lo, maeu_hi = query_delay_seconds("MAEU")
     cmdu_lo, cmdu_hi = query_delay_seconds("CMDU")
+    oolu_lo, oolu_hi = query_delay_seconds("OOLU")
+    zimu_lo, zimu_hi = query_delay_seconds("ZIMU")
+    hdmu_lo, hdmu_hi = query_delay_seconds("HDMU")
+    cosu_lo, cosu_hi = query_delay_seconds("COSU")
     ymja_lo, ymja_hi = query_delay_seconds("YMJA")
     oney_lo, oney_hi = query_delay_seconds("ONEY")
     assert hlcu_lo >= 5
     assert mscu_lo >= 5
     assert maeu_lo >= 5
     assert cmdu_lo >= 5
+    assert oolu_lo >= 5
+    assert zimu_lo >= 5
     assert ymja_hi <= 4
     assert oney_hi <= 4
+    assert hdmu_hi <= 4
+    assert cosu_hi <= 4
 
 
 def test_cli_no_wait_challenge_flag():
@@ -294,6 +310,10 @@ def test_carrier_schedule_lanes_overlap_headless_and_headed():
     )
     assert carrier_schedule_lanes(["HLCU", "CMDU"]) == ([], ["HLCU", "CMDU"])
     assert carrier_schedule_lanes(["ONEY"]) == (["ONEY"], [])
+    assert carrier_schedule_lanes(["HDMU", "COSU", "OOLU", "ZIMU"]) == (
+        ["HDMU", "COSU"],
+        ["OOLU", "ZIMU"],
+    )
 
 
 @pytest.mark.asyncio

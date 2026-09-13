@@ -14,8 +14,12 @@
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
 | `MAEU` | Maersk | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成 |
 | `CMDU` | CMA CGM | 已实现；用本机普通 Chrome（不用 Playwright）过人机验证后批量查箱。还箱超过约 15 天可能无结果 |
+| `OOLU` | OOCL | 已实现；Cargo Tracking 表单查询；验证码在当前窗口等待完成 |
+| `HDMU` | HMM | 已实现；默认无头。箱号前缀可以不是 HDMU，Carrier 仍填 `HDMU` |
+| `COSU` | COSCO | 已实现；默认无头。解析 SCCT 动态节点表 |
+| `ZIMU` | ZIM | 已实现；Track a Shipment；hCaptcha 在当前窗口等待完成 |
 
-每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU 无头更容易被拦，因此这四家默认 headed。
+每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU / OOLU / ZIMU 无头更容易被拦，因此这些家默认 headed。
 
 ## 安装
 
@@ -28,11 +32,11 @@ playwright install chromium
 
 ## 输入
 
-编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU`。不要填写 POL，程序从最近一程海船装船港推断。
+编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU` / `OOLU` / `HDMU` / `COSU` / `ZIMU`。不要填写 POL，程序从最近一程海船装船港推断。Carrier 以本列为准，不用箱号前缀猜船公司（例如 HMM 箱号可以是 `DFSU...`，Carrier 仍填 `HDMU`）。
 
 也接受表头别名，例如 `箱号` / `集装箱号` / `船公司` / `SCAC`。多余列会原样带到结果表。
 
-读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` 若在输入中则并行（默认可无头），同时有头船公司按 `MSCU` → `MAEU` → `HLCU` → `CMDU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
+读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` / `HDMU` / `COSU` 若在输入中则并行（默认可无头），同时有头船公司按 `MSCU` → `MAEU` → `HLCU` → `CMDU` → `OOLU` → `ZIMU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
 
 ## 本地网页控制台
 
@@ -48,16 +52,16 @@ python app.py --serve
 
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
-- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。HLCU / CMDU 打开本机普通 Chrome，等人过验证后保持窗口打开并批量查该家剩余箱；MAEU 在当前自动化窗口等待；MSCU 交给普通系统 Chrome 后需退出再继续。关掉则自动失败并可能熔断该家
-- **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU 仍会开 Chrome
+- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。HLCU / CMDU 打开本机普通 Chrome，等人过验证后保持窗口打开并批量查该家剩余箱；MAEU / OOLU / ZIMU 在当前自动化窗口等待；MSCU 交给普通系统 Chrome 后需退出再继续。关掉则自动失败并可能熔断该家
+- **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU / OOLU / ZIMU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页会显示验证码等待状态和对应操作。HLCU / CMDU：在本机普通 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。MAEU 在当前自动化窗口等待。MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
+网页会显示验证码等待状态和对应操作。HLCU / CMDU：在本机普通 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。MAEU / OOLU / ZIMU 在当前自动化窗口等待。MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
 
 ## 命令行
 
-单箱（6 家均已实现）：
+单箱（10 家均已实现）：
 
 ```bash
 python app.py --carrier HLCU --container HLXU1234567
@@ -66,6 +70,10 @@ python app.py --carrier ONEY --container ONEU1234567
 python app.py --carrier MSCU --container MSCU1234567
 python app.py --carrier MAEU --container MSKU1234567
 python app.py --carrier CMDU --container CMAU1234567
+python app.py --carrier OOLU --container OOLU6895702
+python app.py --carrier HDMU --container DFSU7369437
+python app.py --carrier COSU --container CSNU6609294
+python app.py --carrier ZIMU --container TCNU3698035
 python app.py --carrier HLCU --container HLXU1234567 --headed
 ```
 
@@ -121,7 +129,7 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 真实 CAPTCHA 仍需要人工完成；保留窗口不能保证站点放行。如果 CMDU 验证框显示“没有互联网接入”，应检查本机网络、代理 / VPN 或联系船公司支持。完全无人值守可使用 CMA CGM 官方 [Visibility API](https://api-portal.cma-cgm.com/products/visibility)，其公共接口也需要申请 API Key；本工具目前仍使用网页查询。
 
-HLCU / MSCU / MAEU / CMDU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。HLCU / CMDU / MAEU 不再走 GET search 或箱号深链（更容易再次触发挑战）。无人值守：
+HLCU / MSCU / MAEU / CMDU / OOLU / ZIMU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。HLCU / CMDU / MAEU 不再走 GET search 或箱号深链（更容易再次触发挑战）。无人值守：
 
 ```bash
 python app.py input/containers.xlsx --no-wait-challenge

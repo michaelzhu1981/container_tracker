@@ -116,6 +116,8 @@ def classify_event_type(text: str) -> EventType:
         return "DISC"
     if any(k in blob for k in ("on board", "onboard", "loaded on", "load on vessel", "laden on")):
         return "LOAD"
+    if any(k in blob for k in ("vessel loading", "loading at pol", "loading at first pol")):
+        return "LOAD"
     if re.search(r"(?<!un)\bloaded\b", blob) or re.search(r"\bload\b", blob):
         if "download" not in blob:
             return "LOAD"

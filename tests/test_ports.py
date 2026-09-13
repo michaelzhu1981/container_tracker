@@ -14,6 +14,11 @@ def test_unknown_location_stays_normalized():
     assert display_port("Singapore") == "SINGAPORE"
 
 
+def test_vung_tau_and_yantian_terminal_aliases():
+    assert display_port("BA RIA VUNG TAU, VIETNAM") == "VUNG TAU"
+    assert display_port("Yantian Int'l Container Tml") == "YANTIAN"
+
+
 def test_shanghai_and_ningbo_aliases():
     assert display_port("Shanghai, CN") == "SHANGHAI"
     assert display_port("NINGBO, ZHEJIANG, CHINA") == "NINGBO"

@@ -71,6 +71,10 @@
 | MAEU | Maersk |
 | MSCU | MSC |
 | CMDU | CMA CGM |
+| OOLU | OOCL |
+| HDMU | HMM |
+| COSU | COSCO Shipping Lines |
+| ZIMU | ZIM |
 
 推荐顺序：HLCU → YMJA → ONEY → MAEU → MSCU → CMDU。若 HLCU 因 Cloudflare 无法在 V0.1 跑通，改先做 YMJA / ONEY，不要卡死在第一家。
 
@@ -109,6 +113,10 @@ TRACKERS = {
     "MAEU": MaerskTracker,
     "MSCU": MscTracker,
     "CMDU": CmaTracker,
+    "OOLU": OoclTracker,
+    "HDMU": HmmTracker,
+    "COSU": CoscoTracker,
+    "ZIMU": ZimTracker,
 }
 
 tracker = TRACKERS[carrier](browser)
@@ -330,7 +338,7 @@ MVP 只产出 Excel + 终端，不产出 JSON/CSV。截图/HTML 是旁路文件�
   - 无 `POL` 列；不放示例箱号
 - Sheet 2 `Instructions`（英文，程序忽略）
   - Paste container numbers into column A starting at row 2
-  - Type a Carrier code in column B for each row: HLCU, YMJA, ONEY, MAEU, MSCU, or CMDU
+  - Type a Carrier code in column B for each row: HLCU, YMJA, ONEY, MAEU, MSCU, CMDU, OOLU, HDMU, COSU, or ZIMU
   - Save this file, then run: `python app.py input/containers.xlsx`
 
 不另做 `containers.sample.xlsx`。
@@ -342,11 +350,11 @@ MVP 只产出 Excel + 终端，不产出 JSON/CSV。截图/HTML 是旁路文件�
 | Column | 规则 | 合法示例 | 非法处理 |
 |---|---|---|---|
 | `Container` | 去空格、去横线后大写；形态 `AAAA#######`。ISO 6346 校验位错误只告警仍查询 | `HLXU1234567` | 空 → 该行 `CHECK_FAILED` / `INVALID_INPUT`，不打开网页 |
-| `Carrier` | 去空格大写；必须是六码之一。以本列为准，**不用箱号前缀猜船公司** | `HLCU` | 未知 → `UNSUPPORTED_CARRIER`，不打开网页 |
+| `Carrier` | 去空格大写；必须是已支持船公司代码。以本列为准，**不用箱号前缀猜船公司** | `HLCU` | 未知 → `UNSUPPORTED_CARRIER`，不打开网页 |
 
 **没有输入 POL 列。** 若多了一列 `POL`，透传时改名为 `POL_input`，不得覆盖输出推断的 `POL`。
 
-Carrier 枚举：`HLCU` | `YMJA` | `ONEY` | `MAEU` | `MSCU` | `CMDU`
+Carrier 枚举：`HLCU` | `YMJA` | `ONEY` | `MAEU` | `MSCU` | `CMDU` | `OOLU` | `HDMU` | `COSU` | `ZIMU`
 
 表头 alias（只用于读入）：
 
@@ -500,7 +508,7 @@ Output: output/containers_result.xlsx
 ### 5.5 config.py
 
 - 全局 timeout
-- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU）5–8 秒
+- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU、OOLU、ZIMU）5–8 秒
 - Cloudflare 自动等待 `AUTO_CHALLENGE_WAIT_MS`（约 25s），人工兜底 `CHALLENGE_WAIT_MS`（180s）
 - 挑战未过：刷新 tracking URL 最多 2 次，间隔 5s / 15s
 - locale `en-US`
@@ -515,7 +523,7 @@ Output: output/containers_result.xlsx
 ### 6.1 运行方式
 
 - 一个 Browser；读入先按 `Container+Carrier` 去重，再 `groupby("Carrier")` 后**顺序**查询；不并发
-- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU）默认 headed + 持久资料目录
+- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU、OOLU、ZIMU）默认 headed + 持久资料目录
 - Cookie Banner 用选择器自动关
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
 - 流程：打开 Tracking 页（已在该站且无挑战则复用）→ 自动等待 JS 挑战 → 关 Cookie → 用页面表单输入箱号。CMDU / MAEU 与 HLCU 相同，不用 GET search / 箱号深链
@@ -604,6 +612,10 @@ container_tracker/
 | MAEU | [maersk.com/tracking](https://www.maersk.com/tracking/) | 强反爬、动态渲染；与 HLCU 相同走表单+Chrome 交接；`oldest_first` |
 | MSCU | [Track a shipment](https://www.msc.com/en/track-a-shipment) | CAPTCHA、OneTrust、动态加载；`newest_first` |
 | CMDU | [CMA tracking](https://www.cma-cgm.com/ebusiness/tracking) | DataDome、会话超时；与 HLCU 相同走表单+Chrome 交接，不用 GET search；还箱超过约 15 天可能无结果；`oldest_first` |
+| OOLU | [OOCL cargo tracking](https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx) | CAPTCHA、可能弹窗到 ExpressLink；`newest_first` |
+| HDMU | [HMM Track & Trace](https://www.hmm21.com/e-service/general/trackNTrace/TrackNTrace.do) | 历史默认折叠 Previous Moves，解析隐藏行；`newest_first` |
+| COSU | [COSCO cargo tracking](https://elines.coscoshipping.com/ebusiness/cargoTracking) | SCCT SPA，接口正文加密，解析页面动态节点；`newest_first` |
+| ZIMU | [ZIM Track a Shipment](https://www.zim.com/tools/track-a-shipment) | hCaptcha；活动字段 `activityDesc` / `activityDateTz`；`newest_first` |
 
 ### 8.1 HLCU 研究步骤（V0.1）
 

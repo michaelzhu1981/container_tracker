@@ -17,6 +17,13 @@ SHEKOU:
     - SHEKOU
     - SHEKOU, CHINA
     - CNSHK
+VUNG TAU:
+  aliases:
+    - VUNG TAU
+    - BA RIA VUNG TAU
+    - BA RIA VUNG TAU, VIETNAM
+    - VUNG TAU, VIETNAM
+    - VNTOT
 NINGBO:
   aliases:
     - NINGBO

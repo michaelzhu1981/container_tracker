@@ -100,6 +100,7 @@ def test_create_input_template(tmp_path: Path):
     assert rows == []
     instructions = workbook["Instructions"]
     assert "python app.py input/containers.xlsx" in str(instructions["A3"].value)
+    assert "OOLU, HDMU, COSU, or ZIMU" in str(instructions["A2"].value)
 
 
 def test_repo_input_template_exists():
