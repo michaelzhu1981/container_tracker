@@ -7,7 +7,7 @@ from typing import Iterable
 
 from event_text import format_event_time, is_empty_return, is_on_board
 from models import CanonicalEvent, CheckResult, Status, TimelineOrder, TrackResult
-from ports import display_port
+from ports import display_port, normalize_key
 
 OCEAN_MODES = {"MOTHER", "FEEDER", "VESSEL"}
 SUCCESS_STATUS: dict[Status, CheckResult] = {
@@ -28,6 +28,35 @@ def later_key(event: CanonicalEvent, timeline_order: TimelineOrder) -> tuple:
 
 def is_later(a: CanonicalEvent, b: CanonicalEvent, timeline_order: TimelineOrder) -> bool:
     return later_key(a, timeline_order) > later_key(b, timeline_order)
+
+
+def _place_key(event: CanonicalEvent) -> str:
+    return event.location_norm or normalize_key(event.location_raw)
+
+
+def _same_place(left: CanonicalEvent, right: CanonicalEvent) -> bool:
+    a = _place_key(left)
+    b = _place_key(right)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def implies_sailed_without_departure(
+    journey: list[CanonicalEvent],
+    first_load: CanonicalEvent,
+    timeline_order: TimelineOrder,
+) -> bool:
+    """True when an Actual discharge/arrival happens later at another port."""
+    for event in journey:
+        if event.classifier != "ACT" or event.type not in {"DISC", "ARRI"}:
+            continue
+        if not is_later(event, first_load, timeline_order):
+            continue
+        if _same_place(event, first_load):
+            continue
+        return True
+    return False
 
 
 def is_laden_ocean(event: CanonicalEvent) -> bool:
@@ -271,8 +300,15 @@ def evaluate(
         result.voyage = chosen.voyage if chosen else None
         if first_load:
             result.pol = display_port(first_load.location_raw) or first_load.location_norm
-        on_board = _earliest([e for e in load if is_on_board(e)], timeline_order) if carrier == "YMJA" else None
-        if on_board:
+        on_board = None
+        if carrier == "YMJA":
+            on_board = _earliest([e for e in load if is_on_board(e)], timeline_order)
+        if first_load and implies_sailed_without_departure(journey, first_load, timeline_order):
+            result.sailed = True
+            status = "SAILED"
+            if on_board:
+                result.atd = format_event_time(on_board)
+        elif on_board:
             result.sailed = True
             result.atd = format_event_time(on_board)
             status = "SAILED"

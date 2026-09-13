@@ -17,3 +17,15 @@ SHEKOU:
     - SHEKOU
     - SHEKOU, CHINA
     - CNSHK
+NINGBO:
+  aliases:
+    - NINGBO
+    - NINGBO, CHINA
+    - NINGBO ZHEJIANG CHINA
+    - CNNGB
+SHANGHAI:
+  aliases:
+    - SHANGHAI
+    - SHANGHAI, CHINA
+    - SHANGHAI CN
+    - CNSHA

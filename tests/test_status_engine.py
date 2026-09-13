@@ -478,6 +478,63 @@ def test_other_carrier_on_board_is_not_sailed():
     assert result.atd is None
 
 
+def test_discharge_at_other_port_without_departure_is_sailed():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="SHANGHAI",
+            event_date="2026-06-01",
+            sequence_index=1,
+            vessel="MSC BETTINA",
+            voyage="QX621W",
+            raw_text="Export Loaded on Vessel SHANGHAI",
+        ),
+        ev(
+            type="DISC",
+            location_raw="ASHDOD",
+            event_date="2026-07-09",
+            sequence_index=0,
+            vessel="MSC BETTINA",
+            voyage="QX621W",
+            raw_text="Import Discharged from Vessel ASHDOD",
+        ),
+    ]
+    result = evaluate(
+        events,
+        container="MEDU9474359",
+        carrier="MSCU",
+        timeline_order="newest_first",
+        checked_at="2026-09-13 00:00:00",
+    )
+    assert result.status == "SAILED"
+    assert result.sailed is True
+    assert result.atd is None
+    assert result.pol == "SHANGHAI"
+    assert result.vessel == "MSC BETTINA"
+
+
+def test_same_port_discharge_without_departure_is_not_sailed():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="YANTIAN",
+            event_date="2026-09-10",
+            sequence_index=0,
+            raw_text="Loaded YANTIAN",
+        ),
+        ev(
+            type="DISC",
+            location_raw="YANTIAN",
+            event_date="2026-09-11",
+            sequence_index=1,
+            raw_text="Discharged YANTIAN",
+        ),
+    ]
+    result = _eval(events)
+    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.sailed is False
+
+
 def test_no_dates_is_ambiguous():
     events = [
         ev(type="LOAD", location_raw="YANTIAN", sequence_index=0, raw_text="Loaded"),

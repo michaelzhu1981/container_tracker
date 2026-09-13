@@ -500,7 +500,7 @@ Output: output/containers_result.xlsx
 ### 5.5 config.py
 
 - 全局 timeout
-- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU）5–8 秒
+- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU）5–8 秒
 - Cloudflare 自动等待 `AUTO_CHALLENGE_WAIT_MS`（约 25s），人工兜底 `CHALLENGE_WAIT_MS`（180s）
 - 挑战未过：刷新 tracking URL 最多 2 次，间隔 5s / 15s
 - locale `en-US`
@@ -515,7 +515,7 @@ Output: output/containers_result.xlsx
 ### 6.1 运行方式
 
 - 一个 Browser；读入先按 `Container+Carrier` 去重，再 `groupby("Carrier")` 后**顺序**查询；不并发
-- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU）默认 headed + 持久资料目录
+- 无挑战站点默认 headless；`CHALLENGE_CARRIERS`（HLCU、MSCU）默认 headed + 持久资料目录
 - Cookie Banner 用选择器自动关
 - 同一 Carrier **全程一个** persistent context，箱与箱之间只拉开间隔，**不要每箱杀浏览器**
 - 流程：打开 Tracking 页 → 自动等待 JS 挑战 → 关 Cookie → 输入箱号
@@ -600,9 +600,9 @@ container_tracker/
 |---|---|---|
 | HLCU | [Track by container](https://www.hapag-lloyd.com/en/online-business/track/track-by-container-solution.html) | Cloudflare Managed Challenge（已实测） |
 | YMJA | [Cargo tracking](https://www.yangming.com/en/esolution/tracking/cargo_tracking) | 可能支持多箱；MVP 仍逐箱 |
-| ONEY | [ONE cargo tracking](https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking) | 旧版 ecomm 与新站并存 |
+| ONEY | [ONE cargo tracking](https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking) | 旧版 ecomm 与新站并存；`oldest_first` |
 | MAEU | [maersk.com/tracking](https://www.maersk.com/tracking/) | 强反爬、动态渲染 |
-| MSCU | [Track a shipment](https://www.msc.com/en/track-a-shipment) | CAPTCHA、动态加载 |
+| MSCU | [Track a shipment](https://www.msc.com/en/track-a-shipment) | CAPTCHA、OneTrust、动态加载；`newest_first` |
 | CMDU | [CMA tracking](https://www.cma-cgm.com/eBusiness/Tracking) | 会话超时；还箱超过约 15 天可能无结果 |
 
 ### 8.1 HLCU 研究步骤（V0.1）
@@ -613,7 +613,32 @@ container_tracker/
 
 ### 8.2 事件关键词表（接入时用真实 HTML 填）
 
-每家一张，列：页面原文、`classifier`、`type`、`transport_mode`、`empty`。V0.1 先填 HLCU，其余留空。
+每家一张，列：页面原文、`classifier`、`type`、`transport_mode`、`empty`。
+
+ONEY（日期容器 `text-ds-grey-darker-1` = ACT，`text-ds-grey-darker-2/3` = EST；地点可继承上一行国家）：
+
+| 页面原文 | classifier | type | transport_mode | empty |
+|---|---|---|---|---|
+| Empty Container Release to Shipper | ACT | GTOT | UNKNOWN | true |
+| Gate In to Outbound Terminal | ACT | GTIN | UNKNOWN | — |
+| Loaded on Vessel at Port of Loading | ACT | LOAD | VESSEL | — |
+| Vessel Departure from Port of Loading | ACT | DEPA | VESSEL | — |
+| Vessel Arrival at Port of Discharge | ACT/EST | ARRI | VESSEL | — |
+| Unloaded from Vessel at Port of Discharging | EST | DISC | VESSEL | — |
+| Full Container Delivery to Consignee | EST | GTOT | UNKNOWN | false |
+| Empty Container Returned from Customer | EST/ACT | GTIN | UNKNOWN | true |
+
+MSCU（时间线新→旧；部分箱只有 Export Loaded + 目的港 Import Discharged，没有 Vessel Departed，此时若卸船港不同则判 `SAILED` 且 ATD 留空）：
+
+| 页面原文 | classifier | type | transport_mode | empty |
+|---|---|---|---|---|
+| Empty to Shipper | ACT | GTOT | UNKNOWN | true |
+| Export received at CY | ACT | GTIN | UNKNOWN | false |
+| Export Loaded on Vessel | ACT | LOAD | VESSEL | — |
+| Vessel Departed | ACT | DEPA | VESSEL | — |
+| Import Discharged from Vessel | ACT | DISC | VESSEL | — |
+| Import to consignee | ACT | GTOT | UNKNOWN | false |
+| Empty received at CY | ACT | GTIN | UNKNOWN | true |
 
 ---
 
@@ -625,8 +650,8 @@ container_tracker/
 |---|---|
 | V0.1 | 脚手架 + 最新航次/status engine 单测 + HLCU 单箱 CLI（可用 `--headed`）+ 截图/HTML/日志 |
 | V0.2 | HLCU Excel 批量、groupby、整表增量写盘、基础 CLI |
-| V0.3 | YMJA + ONEY |
-| V0.4 | MAEU + MSCU + CMDU |
+| V0.3 | YMJA + ONEY（ONEY 已接入） |
+| V0.4 | MAEU + MSCU + CMDU（MSCU 已接入） |
 | V0.5 | session 复用、失败重试 1 次、`--resume` / 跳过 SAILED、汇总统计 |
 | V1.0 | 6 家默认 headless 无人值守；英文 CLI 进度与汇总；README 使用说明可用中文 |
 

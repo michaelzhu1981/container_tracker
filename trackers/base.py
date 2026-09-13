@@ -28,6 +28,10 @@ COOKIE_SELECTORS = (
     "button:has-text('Agree')",
     "button:has-text('I agree')",
     "button:has-text('Allow all')",
+    "button:has-text('接受所有 Cookie')",
+    "button:has-text('Accept All Cookies')",
+    "button.onetrust-close-btn-handler",
+    "#onetrust-close-btn-container button",
 )
 
 _HIDE_OVERLAYS_JS = """() => {
@@ -67,6 +71,13 @@ _QUERY_PAGE_MARKERS = (
     "gated in",
     "vessel departed",
     "cargo tracking",
+    "loaded on vessel",
+    "vessel departure from",
+    "export loaded",
+    "empty to shipper",
+    "eventtable",
+    "msc-flow-tracking__step",
+    "total 1 result",
 )
 
 

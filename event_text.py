@@ -38,13 +38,19 @@ _DATE_PATTERNS = [
     ("%Y/%m/%d %H:%M:%S", re.compile(r"\b(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\b")),
     ("%Y/%m/%d %H:%M", re.compile(r"\b(\d{4}/\d{2}/\d{2} \d{2}:\d{2})\b")),
     ("%d-%b-%Y %H:%M", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2})\b")),
+    ("%d %b %Y %H:%M", re.compile(r"\b(\d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2})\b")),
     ("%d/%m/%Y %H:%M", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4} \d{2}:\d{2})\b")),
     ("%Y-%m-%d", re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")),
     ("%Y/%m/%d", re.compile(r"\b(\d{4}/\d{2}/\d{2})\b")),
     ("%d-%b-%Y", re.compile(r"\b(\d{1,2}-[A-Za-z]{3}-\d{4})\b")),
+    ("%d %b %Y", re.compile(r"\b(\d{1,2} [A-Za-z]{3} \d{4})\b")),
     ("%d/%m/%Y", re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")),
     ("%d.%m.%Y", re.compile(r"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")),
 ]
+_ISO_TZ_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"
+)
+_COMPACT_DT_RE = re.compile(r"\b(20\d{6})(\d{4,6})\b")
 
 
 def _lower(text: str) -> str:
@@ -93,16 +99,45 @@ def classify_event_type(text: str) -> EventType:
         return "DEPA"
     if re.search(r"\bdeparted\b", blob) and "gate" not in blob:
         return "DEPA"
-    if any(k in blob for k in ("on board", "onboard", "loaded on", "loaded", "load on vessel", "laden on")):
-        return "LOAD"
-    if re.search(r"\bload(ed)?\b", blob) and "download" not in blob:
-        return "LOAD"
-    if any(k in blob for k in ("discharged", "discharge", "unloaded")):
+    if any(k in blob for k in ("unloaded", "discharged")):
         return "DISC"
-    if any(k in blob for k in ("empty returned", "empty return")):
+    if "discharge" in blob and not any(k in blob for k in ("arrival", "arrived")):
+        return "DISC"
+    if any(k in blob for k in ("on board", "onboard", "loaded on", "load on vessel", "laden on")):
+        return "LOAD"
+    if re.search(r"(?<!un)\bloaded\b", blob) or re.search(r"\bload\b", blob):
+        if "download" not in blob:
+            return "LOAD"
+    if any(
+        k in blob
+        for k in (
+            "empty returned",
+            "empty return",
+            "empty container returned",
+            "empty received",
+        )
+    ):
         return "GTIN"
-    if "full to consignee" in blob:
+    if any(
+        k in blob
+        for k in (
+            "empty container release",
+            "empty to shipper",
+            "empty dispatched",
+        )
+    ):
         return "GTOT"
+    if any(
+        k in blob
+        for k in (
+            "full to consignee",
+            "full container delivery",
+            "import to consignee",
+        )
+    ):
+        return "GTOT"
+    if "export received" in blob:
+        return "GTIN"
     if "gate in" in blob or "gated in" in blob or "gate-in" in blob:
         return "GTIN"
     if "gate out" in blob or "gated out" in blob or "gate-out" in blob:
@@ -128,6 +163,23 @@ def classify_classifier(text: str, is_actual: bool | None = None) -> Classifier:
 def parse_timestamp(text: str) -> tuple[str, str | None, str | None]:
     """Return (raw, event_date, event_time). Never invent 00:00."""
     raw = text.strip()
+    iso = _ISO_TZ_RE.search(text)
+    if iso:
+        token = iso.group(1).replace("T", " ")
+        try:
+            parsed = datetime.strptime(token, "%Y-%m-%d %H:%M:%S")
+            return raw, parsed.strftime("%Y-%m-%d"), parsed.strftime("%H:%M")
+        except ValueError:
+            pass
+    compact = _COMPACT_DT_RE.search(text)
+    if compact:
+        digits = compact.group(1) + compact.group(2)
+        if len(digits) >= 12:
+            try:
+                parsed = datetime.strptime(digits[:12], "%Y%m%d%H%M")
+                return raw, parsed.strftime("%Y-%m-%d"), parsed.strftime("%H:%M")
+            except ValueError:
+                pass
     for fmt, pattern in _DATE_PATTERNS:
         match = pattern.search(text)
         if not match:
@@ -155,7 +207,13 @@ def is_empty_return(event: CanonicalEvent) -> bool:
         return False
     if any(
         token in blob
-        for token in ("empty return", "returned to depot", "empty in", "empty gate in")
+        for token in (
+            "empty return",
+            "empty received",
+            "returned to depot",
+            "empty in",
+            "empty gate in",
+        )
     ):
         return True
     return bool(event.empty is True and event.type == "GTIN")

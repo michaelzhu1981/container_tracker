@@ -36,13 +36,19 @@ def test_circuit_trips_on_selector_and_resets_on_success():
 
 def test_challenge_carrier_defaults():
     assert default_headed_for("HLCU", False) is True
+    assert default_headed_for("MSCU", False) is True
+    assert default_headed_for("ONEY", False) is False
     assert default_headed_for("YMJA", False) is False
     assert default_headed_for("YMJA", True) is True
     assert chrome_profile_dir("HLCU").name == "chrome_hlcu"
     hlcu_lo, hlcu_hi = query_delay_seconds("HLCU")
+    mscu_lo, mscu_hi = query_delay_seconds("MSCU")
     ymja_lo, ymja_hi = query_delay_seconds("YMJA")
+    oney_lo, oney_hi = query_delay_seconds("ONEY")
     assert hlcu_lo >= 5
+    assert mscu_lo >= 5
     assert ymja_hi <= 4
+    assert oney_hi <= 4
 
 
 def test_cli_no_wait_challenge_flag():

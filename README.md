@@ -31,11 +31,13 @@ python app.py --serve
 
 ## 运行
 
-单箱（目前实现 HLCU / YMJA）：
+单箱（目前实现 HLCU / YMJA / ONEY / MSCU）：
 
 ```bash
 python app.py --carrier HLCU --container HLXU1234567
 python app.py --carrier YMJA --container YMLU1234567
+python app.py --carrier ONEY --container ONEU1234567
+python app.py --carrier MSCU --container MSCU1234567
 python app.py --carrier HLCU --container HLXU1234567 --headed
 ```
 
@@ -49,7 +51,9 @@ python app.py input/containers.xlsx
 
 结果写入 `output/containers_result.xlsx`。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。完整 HTML 在 `logs/html/`。
 
-当前已实现 Hapag-Lloyd (`HLCU`) 与 Yang Ming (`YMJA`)。其余船公司会记为尚未实现。
+当前已实现 Hapag-Lloyd (`HLCU`)、Yang Ming (`YMJA`)、ONE (`ONEY`) 与 MSC (`MSCU`)。Maersk / CMA 会记为尚未实现。
+
+HLCU 与 MSCU 默认打开可见 Chrome（Cookie / CAPTCHA）。ONEY 与 YMJA 默认无头。
 
 遇到 Cloudflare / CAPTCHA 时：
 

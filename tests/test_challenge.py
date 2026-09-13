@@ -35,6 +35,14 @@ def test_query_screenshot_keeps_tracking_results_only():
         "Container Status\nOn Board VUNG TAU",
         "<table aria-label='Container Status Information'></table>",
     )
+    assert is_query_screenshot_page(
+        "Total 1 result\nLoaded on Vessel at Port of Loading",
+        '<table class="EventTable_table-container"></table>',
+    )
+    assert is_query_screenshot_page(
+        "Export Loaded on Vessel\nEmpty to Shipper",
+        '<div class="msc-flow-tracking__step"></div>',
+    )
     assert not is_query_screenshot_page(
         "checking your browser\nVerify you are human",
         "<html>Security Check</html>",
