@@ -8,7 +8,7 @@
 
 | 代码 | 船公司 | 适配器 |
 |---|---|---|
-| `HLCU` | Hapag-Lloyd | 已实现；默认打开可见 Chrome |
+| `HLCU` | Hapag-Lloyd | 已实现；默认打开可见 Chrome；Cloudflare 在当前窗口完成后再批量查箱 |
 | `YMJA` | Yang Ming | 已实现；默认无头 |
 | `ONEY` | ONE | 已实现；默认无头 |
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
@@ -48,12 +48,12 @@ python app.py --serve
 
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
-- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。CMDU / MAEU 在当前 Chrome 窗口等人过验证，通过后批量查该家剩余箱；HLCU / MSCU 交给普通系统 Chrome。关掉则自动失败并可能熔断该家
+- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。HLCU / MAEU / CMDU 在当前 Chrome 窗口等人过验证，通过后批量查该家剩余箱；MSCU 交给普通系统 Chrome。关掉则自动失败并可能熔断该家
 - **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页会显示验证码等待状态和对应操作。CMDU / MAEU：先在当前 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。HLCU / MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
+网页会显示验证码等待状态和对应操作。HLCU / MAEU / CMDU：先在当前 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
 
 ## 命令行
 
@@ -115,13 +115,13 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 1. 只识别验证提示或可见验证 iframe；Cookie 说明里的 `.hcaptcha.com`、SDK 脚本和隐藏组件不算挑战。
 2. 先等最多 25 秒，让非交互 JS 挑战自行消失。
-3. CMDU 打开本机普通 Google Chrome（无远程调试）。在该窗口完成 DataDome，**不要关闭**。最多等 10 分钟；通过后批量查箱。若 Chrome 提示，打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。MAEU 仍在当前自动化窗口等待。Stop 可取消等待。
-4. HLCU / MSCU 仍使用普通系统 Chrome 交接：完成验证、出现搜索框后退出该 Chrome，程序重新打开同一资料目录查询。
+3. CMDU 打开本机普通 Google Chrome（无远程调试）。在该窗口完成 DataDome，**不要关闭**。最多等 10 分钟；通过后批量查箱。若 Chrome 提示，打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。HLCU / MAEU 仍在当前自动化窗口等待 Cloudflare / 验证码。Stop 可取消等待。
+4. MSCU 仍使用普通系统 Chrome 交接：完成验证、出现搜索框后退出该 Chrome，程序重新打开同一资料目录查询。
 5. 每箱最多进入一次人工验证流程；验证后再次被拦则记录失败。无人值守遇到 CAPTCHA 不反复刷新；连续两箱被拦会停止该家剩余查询。
 
 真实 CAPTCHA 仍需要人工完成；保留窗口不能保证站点放行。如果 CMDU 验证框显示“没有互联网接入”，应检查本机网络、代理 / VPN 或联系船公司支持。完全无人值守可使用 CMA CGM 官方 [Visibility API](https://api-portal.cma-cgm.com/products/visibility)，其公共接口也需要申请 API Key；本工具目前仍使用网页查询。
 
-HLCU / MSCU / MAEU / CMDU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。CMDU / MAEU 不再走 GET search 或箱号深链（更容易再次触发 DataDome / Akamai）。无人值守：
+HLCU / MSCU / MAEU / CMDU 默认就会打开可见 Chrome，不必再加 `--wait-challenge`。HLCU / MAEU / CMDU 不再走 GET search 或箱号深链（更容易再次触发挑战）。无人值守：
 
 ```bash
 python app.py input/containers.xlsx --no-wait-challenge

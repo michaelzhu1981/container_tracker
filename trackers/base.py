@@ -317,7 +317,8 @@ class BaseTracker(ABC):
         """Reuse the current tab when it is already on this carrier.
 
         Returns False when a bot-check is showing so track() can wait or
-        hand the same profile to system Chrome, same as HLCU.
+        hand the same profile to system Chrome when this carrier does not
+        wait in the current window.
         """
         current = ""
         try:
