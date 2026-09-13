@@ -21,7 +21,7 @@ from cli import build_parser
 def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("CMDU") is True
     assert unlocks_in_current_browser("MAEU") is True
-    assert unlocks_in_current_browser("HLCU") is True
+    assert unlocks_in_current_browser("HLCU") is False
     assert unlocks_in_current_browser("MSCU") is False
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("MAEU") is False

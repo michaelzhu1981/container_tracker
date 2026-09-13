@@ -202,7 +202,6 @@ def parse_hapag_html(html: str) -> list[CanonicalEvent]:
 
 class HapagTracker(BaseTracker):
     carrier_code = "HLCU"
-    wait_in_current_browser = True
     timeline_order = "oldest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
