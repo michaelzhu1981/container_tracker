@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from status_engine import evaluate
-from trackers.hmm import parse_hmm_html
+from trackers.base import TrackerError
+from trackers.hmm import HmmTracker, parse_hmm_html
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hmm"
 
@@ -56,3 +59,42 @@ def test_parse_empty_returned_is_not_loaded():
     )
     assert result.status == "NOT_LOADED"
     assert result.sailed is False
+
+
+@pytest.mark.asyncio
+async def test_search_reports_hmm_access_denied_as_cloudflare():
+    html = """<html><head><title> Access Denied </title></head><body>
+    <p>Thank you for using HMM e-service.<br>
+    Your access to this site has been limited due to abnormal connection.</p>
+    </body></html>"""
+
+    class Locator:
+        def __init__(self):
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return False
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def click(self, **kwargs):
+            return None
+
+    class Page:
+        async def content(self):
+            return html
+
+        async def evaluate(self, script, arg=None):
+            return (
+                "Thank you for using HMM e-service.\n"
+                "Your access to this site has been limited due to abnormal connection."
+            )
+
+        def locator(self, selector):
+            return Locator()
+
+    tracker = HmmTracker(Page())
+    with pytest.raises(TrackerError) as exc:
+        await tracker.search("DFSU7369437")
+    assert exc.value.code == "CLOUDFLARE"

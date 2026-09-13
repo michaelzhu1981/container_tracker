@@ -10,7 +10,8 @@ from html.parser import HTMLParser
 _CLOUDFLARE_TEXT = (
     r"checking your browser|managed challenge|verify (?:that )?you are human|"
     r"security check|attention required[\s\S]*cloudflare|errors\.edgesuite\.net|"
-    r"access denied[\s\S]*(?:edgesuite|akamai|reference #)"
+    r"access denied[\s\S]*(?:edgesuite|akamai|reference #)|"
+    r"abnormal connection|access to this site has been limited"
 )
 _CAPTCHA_TEXT = (
     r"(?:please\s+)?(?:complete|solve|pass)\s+(?:the\s+|this\s+|a\s+)?"

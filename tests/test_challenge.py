@@ -64,6 +64,21 @@ def test_akamai_access_denied_is_cloudflare():
     )
 
 
+def test_hmm_abnormal_connection_is_cloudflare():
+    html = """<html><head><title> Access Denied </title></head><body>
+    <p>Thank you for using HMM e-service.<br>
+    Your access to this site has been limited due to abnormal connection.</p>
+    </body></html>"""
+    assert challenge_code(html) == "CLOUDFLARE"
+    assert (
+        challenge_code(
+            "Thank you for using HMM e-service.\n"
+            "Your access to this site has been limited due to abnormal connection."
+        )
+        == "CLOUDFLARE"
+    )
+
+
 def test_normal_tracking_page_is_not_a_challenge():
     assert challenge_code("Cargo Tracking\nSearch\nContainer No.") is None
     assert challenge_code("Cookie Policy and Cloudflare CDN mention") is None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from challenges import CHALLENGE_CODE_JS
+from challenges import CHALLENGE_CODE_JS, challenge_code
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -153,6 +153,10 @@ def parse_hmm_html(html: str) -> list[CanonicalEvent]:
 
 class HmmTracker(BaseTracker):
     carrier_code = "HDMU"
+    wait_in_current_browser = True
+    use_system_chrome = True
+    system_chrome_host = "hmm21.com"
+    system_chrome_challenge = "HMM access check"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
     screenshot_selectors = (
@@ -185,19 +189,33 @@ class HmmTracker(BaseTracker):
             return
         await self.dismiss_cookies(wait_ms=8_000)
 
+    async def _raise_if_blocked(self) -> None:
+        text = await self._visible_text()
+        html = ""
+        try:
+            html = await self.page.content()
+        except Exception:  # noqa: BLE001
+            html = ""
+        code = challenge_code(text) or challenge_code(html)
+        if code:
+            raise TrackerError("HMM blocked this connection.", code)
+
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self.dismiss_cookies(wait_ms=0)
+        await self._raise_if_blocked()
         field = self.page.locator("input[name='srchCntrNo1']")
         try:
             await field.first.wait_for(state="visible", timeout=12_000)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
+            await self._raise_if_blocked()
             field = self.page.locator("input[name='srchCntrNo1']")
             try:
                 await field.first.wait_for(state="visible", timeout=12_000)
             except Exception as retry_exc:  # noqa: BLE001
+                await self._raise_if_blocked()
                 raise TrackerError(
                     "Could not find the container search field.", "SELECTOR"
                 ) from retry_exc

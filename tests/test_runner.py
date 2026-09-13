@@ -26,9 +26,10 @@ def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("MSCU") is False
     assert unlocks_in_current_browser("OOLU") is True
     assert unlocks_in_current_browser("ZIMU") is True
-    assert unlocks_in_current_browser("HDMU") is False
+    assert unlocks_in_current_browser("HDMU") is True
     assert unlocks_in_current_browser("COSU") is False
     assert uses_system_chrome("CMDU") is True
+    assert uses_system_chrome("HDMU") is True
     assert uses_system_chrome("MAEU") is False
     assert uses_system_chrome("HLCU") is True
     hlcu = system_chrome_settings("HLCU")
@@ -37,6 +38,9 @@ def test_cmdu_unlocks_in_current_browser():
     cmdu = system_chrome_settings("CMDU")
     assert cmdu["host"] == "cma-cgm.com"
     assert cmdu["challenge_name"] == "DataDome"
+    hdmu = system_chrome_settings("HDMU")
+    assert hdmu["host"] == "hmm21.com"
+    assert hdmu["challenge_name"] == "HMM access check"
 
 
 def test_hlcu_does_not_relaunch_browser_per_box():
@@ -75,7 +79,7 @@ def test_challenge_carrier_defaults():
     assert default_headed_for("ZIMU", False) is True
     assert default_headed_for("ONEY", False) is False
     assert default_headed_for("YMJA", False) is False
-    assert default_headed_for("HDMU", False) is False
+    assert default_headed_for("HDMU", False) is True
     assert default_headed_for("COSU", False) is False
     assert default_headed_for("YMJA", True) is True
     assert chrome_profile_dir("HLCU").name == "chrome_hlcu"
@@ -95,9 +99,9 @@ def test_challenge_carrier_defaults():
     assert cmdu_lo >= 5
     assert oolu_lo >= 5
     assert zimu_lo >= 5
+    assert hdmu_lo >= 5
     assert ymja_hi <= 4
     assert oney_hi <= 4
-    assert hdmu_hi <= 4
     assert cosu_hi <= 4
 
 
@@ -311,8 +315,8 @@ def test_carrier_schedule_lanes_overlap_headless_and_headed():
     assert carrier_schedule_lanes(["HLCU", "CMDU"]) == ([], ["HLCU", "CMDU"])
     assert carrier_schedule_lanes(["ONEY"]) == (["ONEY"], [])
     assert carrier_schedule_lanes(["HDMU", "COSU", "OOLU", "ZIMU"]) == (
-        ["HDMU", "COSU"],
-        ["OOLU", "ZIMU"],
+        ["COSU"],
+        ["OOLU", "ZIMU", "HDMU"],
     )
 
 

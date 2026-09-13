@@ -631,7 +631,7 @@ def _cancelled(cancel_event: asyncio.Event | None) -> bool:
 def carrier_schedule_lanes(
     carriers: list[str] | set[str],
 ) -> tuple[list[str], list[str]]:
-    """Run headless ONEY/YMJA/HDMU/COSU together; headed carriers stay serial."""
+    """Run headless ONEY/YMJA/COSU together; headed carriers stay serial."""
     present = set(carriers)
     parallel = [code for code in HEADLESS_PARALLEL_CARRIERS if code in present]
     serial = [code for code in HEADED_SERIAL_CARRIERS if code in present]
