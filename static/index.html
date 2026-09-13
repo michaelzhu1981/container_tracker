@@ -66,11 +66,14 @@
     .badge.NOT_LOADED, .badge.stopped, .badge.idle, .badge.pending { background: var(--slate-soft); color: var(--slate); }
     .wrap { padding: 16px 22px 28px; display: grid; gap: 14px; }
     .panel {
+      position: relative;
+      z-index: 5;
       background: var(--paper);
       border: 1px solid var(--line);
       padding: 12px 14px;
+      overflow: visible;
     }
-    .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; overflow: visible; }
     button {
       font: inherit;
       font-weight: 650;
@@ -83,7 +86,28 @@
     button.secondary { background: var(--paper); color: var(--ink); }
     button.danger { background: var(--paper); color: var(--rust); border-color: var(--rust); }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    label.opt { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+    label.opt,
+    .has-tip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink);
+      cursor: help;
+      border-bottom: 1px dotted var(--muted);
+    }
+    .opt-tip {
+      position: fixed;
+      z-index: 1000;
+      max-width: 300px;
+      padding: 8px 10px;
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+    .opt-tip[hidden] { display: none; }
     .carriers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .chip {
       border: 1px solid var(--line);
@@ -178,12 +202,13 @@
         <button id="startBtn" type="button">Start job</button>
         <button id="stopBtn" class="danger" type="button" disabled>Stop job</button>
         <button id="reloadBtn" class="secondary" type="button">Reload from Excel</button>
-        <label class="opt"><input id="resume" type="checkbox"> Skip already SAILED</label>
-        <label class="opt"><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
-        <label class="opt"><input id="headed" type="checkbox"> Show browser</label>
+        <label class="opt" data-tip="Reuse SAILED rows from the existing result file. Those boxes are not queried again."><input id="resume" type="checkbox"> Skip already SAILED</label>
+        <label class="opt" data-tip="If Cloudflare or CAPTCHA still blocks after automatic waits, pause so you can finish the check in Chrome. Turn off to fail those rows and stop that carrier after two repeats."><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
+        <label class="opt" data-tip="Open a visible browser window for every carrier. Off keeps most sites headless; HLCU still opens Chrome because of Cloudflare."><input id="headed" type="checkbox"> Show browser</label>
+        <div id="optTip" class="opt-tip" hidden></div>
       </div>
       <div class="controls" style="margin-top:10px">
-        <span class="sub">Carriers</span>
+        <span class="sub has-tip" data-tip="Choose which carriers to query when you start a job. This does not filter the table. All selected or none selected queries every carrier.">Carriers</span>
         <div id="carrierChips" class="carriers"></div>
       </div>
     </div>
@@ -301,7 +326,7 @@
           : carriers
       );
       chipsEl.innerHTML = carriers.map((code) =>
-        `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}">${code}</button>`
+        `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}" data-tip="Query ${code} boxes when you start a job. Does not hide rows in the table.">${code}</button>`
       ).join("");
     }
 
@@ -454,6 +479,48 @@
       const chip = event.target.closest(".chip");
       if (!chip) return;
       chip.classList.toggle("on");
+    });
+
+    const optTip = document.getElementById("optTip");
+    function hideOptTip() {
+      optTip.hidden = true;
+    }
+    function showOptTip(label) {
+      const text = label.getAttribute("data-tip");
+      if (!text) return;
+      optTip.textContent = text;
+      optTip.hidden = false;
+      const box = label.getBoundingClientRect();
+      const tipBox = optTip.getBoundingClientRect();
+      let left = box.left;
+      if (left + tipBox.width > window.innerWidth - 12) {
+        left = Math.max(12, box.right - tipBox.width);
+      }
+      let top = box.top - tipBox.height - 8;
+      if (top < 8) top = box.bottom + 8;
+      optTip.style.left = `${Math.max(12, left)}px`;
+      optTip.style.top = `${top}px`;
+    }
+    const tipRoot = document.querySelector(".panel");
+    tipRoot.addEventListener("mouseover", (event) => {
+      const el = event.target.closest("[data-tip]");
+      if (el && tipRoot.contains(el)) showOptTip(el);
+    });
+    tipRoot.addEventListener("mouseout", (event) => {
+      const el = event.target.closest("[data-tip]");
+      if (!el) return;
+      if (event.relatedTarget && el.contains(event.relatedTarget)) return;
+      hideOptTip();
+    });
+    tipRoot.addEventListener("focusin", (event) => {
+      const el = event.target.closest("[data-tip]");
+      if (el) showOptTip(el);
+    });
+    tipRoot.addEventListener("focusout", (event) => {
+      const el = event.target.closest("[data-tip]");
+      if (!el) return;
+      if (event.relatedTarget && el.contains(event.relatedTarget)) return;
+      hideOptTip();
     });
 
     refresh();
