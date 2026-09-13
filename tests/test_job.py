@@ -78,6 +78,18 @@ def test_job_start_rejects_empty(tmp_path: Path):
         manager.request_stop()
 
 
+def test_job_start_rejects_empty_carrier_filter(tmp_path: Path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("HLXU1234567", "HLCU")])
+    manager = JobManager(
+        run_batch_fn=lambda *a, **k: None,
+        input_path=source,
+        output_path=tmp_path / "out.xlsx",
+    )
+    with pytest.raises(JobStartError, match="No carrier selected"):
+        manager.start(carriers=[])
+
+
 def test_challenge_progress_exposes_action_and_clears_on_resume(tmp_path):
     source = tmp_path / "in.xlsx"
     _write_input(source, [("ECMU7271573", "CMDU")])

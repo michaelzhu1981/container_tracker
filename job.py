@@ -177,11 +177,13 @@ class JobManager:
         if self.state in {"running", "stopping"}:
             raise JobBusyError("A job is already running.")
         rows = order_rows_by_carrier(read_input(self.input_path))
-        if carriers:
+        if carriers is not None:
             allow = {code.strip().upper() for code in carriers if code.strip()}
             unknown = sorted(allow - set(SUPPORTED_CARRIERS))
             if unknown:
                 raise JobStartError(f"Unsupported carrier code: {', '.join(unknown)}.")
+            if not allow:
+                raise JobStartError("No carrier selected.")
             rows = [row for row in rows if row["Carrier"] in allow]
         if limit is not None:
             if limit < 1:

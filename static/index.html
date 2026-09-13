@@ -267,7 +267,7 @@
         <div id="optTip" class="opt-tip" hidden></div>
       </div>
       <div class="controls" style="margin-top:10px">
-        <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected or none selected queries every carrier.">Carriers</span>
+        <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected queries every carrier. None selected queries none.">Carriers</span>
         <div id="carrierChips" class="carriers"></div>
       </div>
     </div>
@@ -406,7 +406,8 @@
 
     function selectedCarriers() {
       const on = chipOnCodes();
-      if (!on.length || on.length === knownCarriers.length) return null;
+      if (!on.length) return [];
+      if (on.length === knownCarriers.length) return null;
       return on;
     }
 
@@ -690,13 +691,18 @@
 
     startBtn.addEventListener("click", async () => {
       try {
+        const carriers = selectedCarriers();
+        if (Array.isArray(carriers) && !carriers.length) {
+          messageEl.textContent = "No carrier selected.";
+          return;
+        }
         render(await api("/api/start", {
           method: "POST",
           body: JSON.stringify({
             resume: document.getElementById("resume").checked,
             wait_for_challenge: document.getElementById("waitChallenge").checked,
             headed: document.getElementById("headed").checked,
-            carriers: selectedCarriers(),
+            carriers,
           }),
         }));
       } catch (err) {
