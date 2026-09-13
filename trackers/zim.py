@@ -51,6 +51,30 @@ _SUBMIT_BUTTON_SELECTORS = (
     "button:has-text('Search')",
     "button[type='submit']",
 )
+_CLEAR_CHIP_SELECTORS = (
+    "li.chips-item.clear-item a",
+    "a:has-text('Clear All')",
+    "li.chips-item.clear-item",
+)
+_CHIP_REMOVE_SELECTORS = (
+    "li.chips-item:not(.clear-item) .chips-icon",
+    "li.chips-item:not(.clear-item) img[alt*='Clear Chip' i]",
+)
+_CLEAR_CHIPS_JS = """() => {
+    const labeled = [...document.querySelectorAll("a, button, .clear-item")].find((el) =>
+        /clear\\s*all/i.test((el.innerText || el.textContent || "").replace(/\\s+/g, " "))
+    );
+    if (labeled) {
+        labeled.click();
+        return "all";
+    }
+    let removed = 0;
+    for (const icon of document.querySelectorAll("li.chips-item:not(.clear-item) .chips-icon")) {
+        icon.click();
+        removed += 1;
+    }
+    return removed;
+}"""
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -483,6 +507,34 @@ class ZimTracker(BaseTracker):
                 continue
         return False
 
+    async def _clear_previous_search(self) -> None:
+        try:
+            await self.page.evaluate(_CLEAR_CHIPS_JS)
+        except Exception:  # noqa: BLE001
+            for selector in _CLEAR_CHIP_SELECTORS:
+                button = self.page.locator(selector)
+                try:
+                    if await button.first.is_visible(timeout=400):
+                        await button.first.click(timeout=3_000)
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            else:
+                for selector in _CHIP_REMOVE_SELECTORS:
+                    icon = self.page.locator(selector)
+                    try:
+                        if await icon.first.is_visible(timeout=400):
+                            await icon.first.click(timeout=3_000)
+                    except Exception:  # noqa: BLE001
+                        continue
+        try:
+            await self.page.wait_for_function(
+                """() => !document.querySelector("li.chips-item:not(.clear-item)")""",
+                timeout=3_000,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def search(self, container: str) -> None:
         self._search_submitted = False
         await self._bind_tracking_response()
@@ -497,13 +549,15 @@ class ZimTracker(BaseTracker):
             field = await self._first_visible_search_field()
         if field is None:
             raise TrackerError("Could not find the container search field.", "SELECTOR")
+        await self._clear_previous_search()
+        field = await self._first_visible_search_field() or field
         await field.first.click()
         await field.first.fill("")
         await field.first.fill(container)
         if not await self._click_search_button():
             await field.first.press("Enter")
         self._search_submitted = True
-        await self._wait_for_results()
+        await self._wait_for_results(container)
 
     async def _has_tracking_result(self) -> bool:
         try:
@@ -521,24 +575,37 @@ class ZimTracker(BaseTracker):
             )
         )
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, container: str = "") -> None:
         response_event = getattr(self.page, "_ct_zim_response_event", None)
+        wanted = json.dumps((container or "").replace(" ", "").upper())
         dom_wait = asyncio.create_task(
             self.page.wait_for_function(
                 """() => {
+                    const wanted = WANT_CONTAINER;
+                    const wrap = document.querySelector(".tracing-result-wrapper");
+                    const shown = (
+                        (wrap && wrap.innerText) ||
+                        (document.body && document.body.innerText) ||
+                        ""
+                    ).replace(/\\s+/g, "").toUpperCase();
                     const text = (document.body && document.body.innerText || "").toLowerCase();
+                    const hasWanted = !wanted || shown.includes(wanted);
                     return (
-                        text.includes("vessel departure") ||
-                        text.includes("last activity") ||
-                        text.includes("unit activity") ||
-                        !!document.querySelector(".tracing-result-wrapper") ||
-                        !!document.querySelector(".card-container-activity") ||
-                        !!document.querySelector("[class*='unitActivity']") ||
+                        (hasWanted && (
+                            text.includes("vessel departure") ||
+                            text.includes("last activity") ||
+                            text.includes("unit activity") ||
+                            !!wrap ||
+                            !!document.querySelector(".card-container-activity") ||
+                            !!document.querySelector("[class*='unitActivity']")
+                        )) ||
                         text.includes("no result") ||
                         text.includes("not found") ||
                         (DETECT_CHALLENGE)()
                     );
-                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS).replace(
+                    "WANT_CONTAINER", wanted
+                ),
                 timeout=35_000,
             )
         )

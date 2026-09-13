@@ -7,6 +7,7 @@ from trackers.base import TrackerError
 from trackers.zim import (
     TRACK_QUERY_URL,
     ZimTracker,
+    _CLEAR_CHIPS_JS,
     _SEARCH_FIELD_SELECTORS,
     json_mentions_container,
     parse_zim_html,
@@ -142,6 +143,56 @@ async def test_search_stays_on_form_instead_of_query_url():
     await ZimTracker(Page()).search("TCNU3698035")
     assert not any("consnumber=" in url for url in gotos)
     assert TRACK_QUERY_URL.format(number="TCNU3698035") not in gotos
+
+
+@pytest.mark.asyncio
+async def test_search_clears_previous_chips_before_typing():
+    fills: list[str] = []
+    scripts: list[str] = []
+    waits: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return "chips-input" in self.selector or "chips-search-button" in self.selector
+
+        async def click(self, **kwargs):
+            return None
+
+        async def fill(self, value):
+            fills.append(value)
+
+        async def press(self, key):
+            return None
+
+    class Page:
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def goto(self, url, **kwargs):
+            return None
+
+        async def evaluate(self, script, arg=None):
+            scripts.append(script)
+            if "chips-item" in script or "Clear All" in script:
+                return "all"
+            return ""
+
+        async def wait_for_function(self, script, timeout=0):
+            waits.append(script)
+            return None
+
+        def on(self, event, handler):
+            return None
+
+    await ZimTracker(Page()).search("ZCSU6809100")
+    assert any("chips-item" in script for script in scripts)
+    assert _CLEAR_CHIPS_JS in scripts
+    assert fills[-1] == "ZCSU6809100"
+    assert any("ZCSU6809100" in script for script in waits)
 
 
 def test_zim_payload_mentions_container():
