@@ -39,6 +39,20 @@ from validate import carrier_supported, container_shape_ok, iso6346_check_digit_
 
 LOGGER = logging.getLogger("container_tracker")
 
+_STEALTH_INIT_JS = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+"""
+
+
+def playwright_context_kwargs(*, headed: bool) -> dict:
+    return {
+        "headless": not headed,
+        "locale": LOCALE,
+        "viewport": {"width": 1400, "height": 900},
+        "ignore_default_args": ["--enable-automation"],
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+
 
 def stdin_can_accept_enter() -> bool:
     try:
@@ -58,6 +72,14 @@ def chrome_commands_using_profile(profile: str) -> list[str]:
     except (OSError, subprocess.CalledProcessError):
         return []
     return [line for line in output.splitlines() if needle in line]
+
+
+def chrome_launch_args(profile: str, url: str) -> list[str]:
+    return [
+        f"--user-data-dir={Path(profile).resolve()}",
+        "--new-window",
+        url,
+    ]
 
 
 def wait_for_system_chrome_closed(
@@ -103,7 +125,7 @@ def wait_for_human_after_chrome_handoff(
     prompt = (
         "Press Enter..."
         if reopen
-        else "Press Enter after the search box is visible and you have closed Chrome..."
+        else "Press Enter after you finish on that page and have closed Chrome..."
     )
     if allow_stdin and stdin_can_accept_enter():
         try:
@@ -112,7 +134,10 @@ def wait_for_human_after_chrome_handoff(
         except EOFError:
             print("No terminal input. Waiting for you to close Google Chrome...")
     else:
-        print("No terminal input. Complete the check in Google Chrome, then close that window.")
+        print(
+            "No terminal input. Complete the check in Google Chrome, "
+            "then close that window. Tracking will search automatically."
+        )
     if wait_for_system_chrome_closed(profile, should_abort=should_abort):
         return True
     print("Timed out waiting for the system Chrome window to close.")
@@ -166,11 +191,7 @@ class CarrierBrowser:
             self.context = None
         profile = chrome_profile_dir(self.carrier)
         profile.mkdir(parents=True, exist_ok=True)
-        kwargs = {
-            "headless": not self.headed,
-            "locale": LOCALE,
-            "viewport": {"width": 1400, "height": 900},
-        }
+        kwargs = playwright_context_kwargs(headed=self.headed)
         try:
             self.context = await self.playwright.chromium.launch_persistent_context(
                 str(profile), channel="chrome", **kwargs
@@ -180,6 +201,10 @@ class CarrierBrowser:
             self.context = await self.playwright.chromium.launch_persistent_context(
                 str(profile), **kwargs
             )
+        try:
+            await self.context.add_init_script(_STEALTH_INIT_JS)
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not install stealth init script for %s.", self.carrier)
         self.context.set_default_timeout(CARRIER_TIMEOUT_MS.get(self.carrier, NAV_TIMEOUT_MS))
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
 
@@ -206,28 +231,20 @@ class CarrierBrowser:
     def _spawn_system_chrome(self, url: str) -> None:
         profile = str(chrome_profile_dir(self.carrier).resolve())
         subprocess.Popen(
-            [
-                "open",
-                "-na",
-                "Google Chrome",
-                "--args",
-                f"--user-data-dir={profile}",
-                "--new-window",
-                url,
-            ],
+            ["open", "-na", "Google Chrome", "--args", *chrome_launch_args(profile, url)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
     async def hand_off_to_system_chrome(self, url: str) -> bool:
-        """Let the user pass Cloudflare in real Chrome, then reopen this profile."""
+        """Open a normal Chrome so the user can pass DataDome, then search after it closes."""
         print()
         print("Automated Chrome cannot complete this check reliably.")
         print("1. The automated window will close.")
-        print("2. Google Chrome will open the tracking page with the same profile.")
-        print("3. Complete the check and wait until the container search box is visible.")
-        print("4. Close that Chrome window (so the profile is not locked).")
-        print("5. Return here and press Enter to resume tracking.")
+        print("2. A normal Google Chrome will open the tracking page.")
+        print("3. Complete the check and wait until the search box is visible.")
+        print("4. You do not need to type the container. Close that Chrome (Cmd+Q);")
+        print("   tracking will search automatically with the unlocked session.")
         print()
         await self.close()
         await asyncio.sleep(1.2)

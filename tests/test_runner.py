@@ -5,6 +5,8 @@ import pytest
 from config import chrome_profile_dir, default_headed_for, query_delay_seconds
 from runner import (
     chrome_commands_using_profile,
+    chrome_launch_args,
+    playwright_context_kwargs,
     should_relaunch_browser_per_box,
     update_circuit,
     wait_for_human_after_chrome_handoff,
@@ -70,6 +72,23 @@ def test_cli_serve_flag():
     args = parser.parse_args(["--serve", "--port", "9001"])
     assert args.serve is True
     assert args.port == 9001
+
+
+def test_chrome_launch_args_are_not_automated():
+    args = chrome_launch_args(
+        "/tmp/sessions/chrome_cmdu",
+        "https://www.cma-cgm.com/ebusiness/tracking",
+    )
+    assert all("remote-debugging" not in item for item in args)
+    assert any(item.startswith("--user-data-dir=") for item in args)
+    assert args[-1].startswith("https://")
+
+
+def test_playwright_context_hides_automation_switches():
+    kwargs = playwright_context_kwargs(headed=True)
+    assert kwargs["headless"] is False
+    assert "--enable-automation" in kwargs["ignore_default_args"]
+    assert "--disable-blink-features=AutomationControlled" in kwargs["args"]
 
 
 def test_chrome_commands_using_profile(monkeypatch):

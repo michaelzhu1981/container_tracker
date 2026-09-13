@@ -53,7 +53,7 @@ python app.py --serve
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页没有终端。遇到 Cloudflare 交接时：在弹出的 Google Chrome 里完成验证，等到出现箱号搜索框，**关掉该 Chrome**，程序会自动接上同一资料目录继续查。
+网页没有终端。遇到 Cloudflare / DataDome 交接时：在弹出的普通 Google Chrome 里完成验证，等到出现搜索框后 **Cmd+Q**。程序用同一资料目录自动查箱号。
 
 ## 命令行
 
@@ -114,9 +114,9 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 ## Cloudflare / CAPTCHA
 
 1. 先短等非交互 JS 挑战自己消失
-2. 仍在挑战页：关掉自动窗口，用同一资料目录打开你平时的 Google Chrome
-3. 在那个窗口里完成验证，等到出现箱号搜索框，**关掉该 Chrome**
-4. 命令行模式回到终端按 Enter；网页控制台等 Chrome 关掉后自动继续
+2. 仍在挑战页：关掉自动窗口，用同一资料目录打开普通 Google Chrome（不开调试端口）
+3. 在那个窗口里完成验证，等到出现搜索框
+4. 关掉该 Chrome（Cmd+Q）；程序用同一资料目录自动填箱号查询
 5. 不要在自动窗口里点勾，那里经常点了也不过
 6. `--no-wait-challenge`：不等人，自动失败后记 `CLOUDFLARE`
 
