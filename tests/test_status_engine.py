@@ -176,6 +176,95 @@ def test_transshipment_pol_is_first_load_port_is_latest():
     assert result.vessel == "FEEDER ONE"
 
 
+def test_transshipment_without_booking_keeps_origin_departure():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="MUHAMMAD BIN QASIM",
+            event_date="2026-08-28",
+            event_time="01:23",
+            sequence_index=2,
+            vessel="BSG BIMINI",
+            voyage="635W",
+            raw_text="Loaded MUHAMMAD BIN QASIM",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="MUHAMMAD BIN QASIM",
+            event_date="2026-08-28",
+            event_time="12:48",
+            sequence_index=3,
+            vessel="BSG BIMINI",
+            voyage="635W",
+            raw_text="Vessel departed MUHAMMAD BIN QASIM",
+        ),
+        ev(
+            type="LOAD",
+            location_raw="SALALAH",
+            event_date="2026-09-07",
+            event_time="03:06",
+            sequence_index=6,
+            vessel="BREMEN EXPRESS",
+            voyage="6135",
+            raw_text="Loaded SALALAH",
+        ),
+        ev(
+            classifier="PLN",
+            type="DEPA",
+            location_raw="SALALAH",
+            event_date="2026-09-07",
+            event_time="04:45",
+            sequence_index=7,
+            vessel="BREMEN EXPRESS",
+            voyage="6135",
+            raw_text="Vessel departed SALALAH",
+        ),
+    ]
+    result = _eval(events)
+    assert result.status == "SAILED"
+    assert result.pol == "MUHAMMAD BIN QASIM"
+    assert result.atd == "2026-08-28 12:48"
+    assert result.load_port == "SALALAH"
+    assert result.vessel == "BSG BIMINI"
+    assert result.voyage == "635W"
+
+
+def test_reuse_without_booking_uses_latest_voyage():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="ROTTERDAM",
+            event_date="2025-01-01",
+            sequence_index=0,
+            vessel="OLD SHIP",
+            voyage="001E",
+            raw_text="Loaded ROTTERDAM",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="ROTTERDAM",
+            event_date="2025-01-02",
+            sequence_index=1,
+            vessel="OLD SHIP",
+            voyage="001E",
+            raw_text="Vessel departed ROTTERDAM",
+        ),
+        ev(
+            type="LOAD",
+            location_raw="YANTIAN",
+            event_date="2026-09-10",
+            sequence_index=2,
+            vessel="NEW SHIP",
+            voyage="100W",
+            raw_text="Loaded YANTIAN",
+        ),
+    ]
+    result = _eval(events)
+    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.pol == "YANTIAN"
+    assert result.vessel == "NEW SHIP"
+
+
 def test_reuse_gap_keeps_latest_cycle():
     events = [
         ev(

@@ -40,12 +40,14 @@ def test_parse_beta_transship_loaded_fixture():
         timeline_order="oldest_first",
         checked_at="2026-09-13 00:00:00",
     )
-    assert result.status == "LOADED_WAITING_DEPARTURE"
-    assert result.pol == "SALALAH"
-    assert result.vessel == "BREMEN EXPRESS"
-    assert result.voyage == "6135"
+    assert result.status == "SAILED"
+    assert result.pol == "MUHAMMAD BIN QASIM"
+    assert result.atd == "2026-08-28 12:48"
+    assert result.load_port == "SALALAH"
     assert result.load_time == "2026-09-07 03:06"
-    assert result.sailed is False
+    assert result.vessel == "BSG BIMINI"
+    assert result.voyage == "635W"
+    assert result.sailed is True
 
 
 def test_parse_beta_not_loaded_planned_ocean():

@@ -120,6 +120,22 @@ def _cluster_by_gap(
     return chosen
 
 
+def _is_single_gap_cluster(
+    events: list[CanonicalEvent], timeline_order: TimelineOrder
+) -> bool:
+    """True when dated events sit in one 30-day window (transshipment, not reuse)."""
+    dated = [e for e in events if e.event_date]
+    if len(dated) <= 1:
+        return True
+    ordered = sorted(dated, key=lambda e: later_key(e, timeline_order))
+    for prev, current in zip(ordered, ordered[1:]):
+        prev_d = _date_value(prev)
+        cur_d = _date_value(current)
+        if prev_d and cur_d and (cur_d - prev_d) > timedelta(days=30):
+            return False
+    return True
+
+
 def _apply_empty_return_split(
     events: list[CanonicalEvent], timeline_order: TimelineOrder
 ) -> list[CanonicalEvent]:
@@ -149,7 +165,7 @@ def select_latest_journey(
         pool, lambda e: (e.booking or "").strip().upper() or None, timeline_order
     )
     if grouped is None:
-        grouped = _group_latest(
+        voyage_grouped = _group_latest(
             pool,
             lambda e: (
                 f"{(e.vessel or '').strip().upper()}|{(e.voyage or '').strip().upper()}"
@@ -158,6 +174,10 @@ def select_latest_journey(
             ),
             timeline_order,
         )
+        # One booking can change vessel/voyage at transshipment. Do not drop the
+        # origin Actual DEPA just because a later mother-vessel group exists.
+        if voyage_grouped is not None and not _is_single_gap_cluster(pool, timeline_order):
+            grouped = voyage_grouped
     if grouped is None:
         if not any(e.event_date for e in pool):
             return None

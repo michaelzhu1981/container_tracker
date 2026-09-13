@@ -224,7 +224,7 @@ class TrackResult:
 只保留 `latest_journey`，优先级：
 
 1. 事件带 `booking`：按 booking 分组，取「组内最晚事件」最新的一组
-2. 否则带 `vessel`+`voyage`：按航次分组，同样取最晚日期最新的一组
+2. 否则带 `vessel`+`voyage`：按航次分组，同样取最晚日期最新的一组。**例外**：全部 ACT 日期落在同一 30 天簇时，视为同一程中转换船，不要按航次拆开（否则会丢掉起始港 Actual DEPA，误把后段未开母船当成 `LOADED_WAITING_DEPARTURE`）
 3. 否则按时间聚类：有 `event_date` 的事件排序，相邻间隔 **> 30 天** 视为新循环；只留包含全局最晚日期的那一簇。Actual empty return 可作为额外边界（见 3.2）
 4. 无任何可解析日期：无法区分旧程 → `MANUAL_CHECK_REQUIRED` / `AMBIGUOUS_JOURNEY`（并截图）
 
