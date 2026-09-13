@@ -159,6 +159,10 @@ def test_query_screenshot_keeps_tracking_results_only():
         "Unit activity\nVessel Departure",
         '<div class="unitActivityList"></div>',
     )
+    assert is_query_screenshot_page(
+        "Cargo Tracking Result\nView Details",
+        '<a class="view-details">View Details</a>',
+    )
     assert not is_query_screenshot_page(
         "checking your browser\nVerify you are human",
         "<html>Security Check</html>",

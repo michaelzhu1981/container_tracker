@@ -126,6 +126,7 @@ _QUERY_PAGE_MARKERS = (
     "total 1 result",
     "shipment history",
     "dynamic node",
+    "view details",
     "vessel departure from first pol",
     "vessel departure from pol",
     "display previous moves",

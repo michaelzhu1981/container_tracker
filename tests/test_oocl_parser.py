@@ -6,9 +6,11 @@ from status_engine import evaluate
 from trackers.base import TrackerError, looks_like_no_result
 from trackers.oocl import (
     OoclTracker,
+    _CLICK_VIEW_DETAILS_JS,
     _SEARCH_FIELD_SELECTORS,
     _SUBMIT_BUTTON_SELECTORS,
     _SUBMIT_SEARCH_JS,
+    _VIEW_DETAILS_SELECTORS,
     is_oocl_entry_url,
     is_oocl_site_error_page,
     oocl_popup_url,
@@ -91,6 +93,147 @@ async def test_first_visible_search_field_ignores_hidden_header_search():
     assert field is not None
     assert field.selector == "#SEARCH_NUMBER"
     assert seen[0] == "#SEARCH_NUMBER"
+
+
+def test_summary_page_needs_view_details_before_events():
+    html = (FIXTURES / "summary_view_details.html").read_text(encoding="utf-8")
+    assert parse_oocl_html(html) == []
+    assert "View Details" in html
+
+
+def test_view_details_selectors_cover_english_label():
+    assert "a:has-text('View Details')" in _VIEW_DETAILS_SELECTORS
+    assert "OOCL View Details" in _CLICK_VIEW_DETAILS_JS
+    assert "查看详情" in _CLICK_VIEW_DETAILS_JS
+
+
+class _ExpandPage:
+    def __init__(self) -> None:
+        self.visible_events = 0
+        self.clicked = 0
+        self.evaluate_scripts: list[str] = []
+
+    async def evaluate(self, script: str, arg=None):
+        self.evaluate_scripts.append(script)
+        if "View Details" in script:
+            self.clicked += 1
+            self.visible_events = 3
+            return 1
+        if "querySelectorAll(\"table\")" in script:
+            return self.visible_events
+        return 0
+
+    def locator(self, selector: str):
+        raise AssertionError(f"locator fallback should not run: {selector}")
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_expand_result_details_clicks_view_details_before_status():
+    page = _ExpandPage()
+    tracker = OoclTracker(page)
+    await tracker.expand_result_details()
+    assert page.clicked == 1
+    assert page.visible_events == 3
+    assert tracker._details_expanded is True
+    await tracker.expand_result_details()
+    assert page.clicked == 1
+
+
+@pytest.mark.asyncio
+async def test_expand_result_details_follows_new_details_tab():
+    class Page:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.evaluate_scripts: list[str] = []
+            self.focused: list[str] = []
+            self.events = 0
+
+        async def list_tab_urls(self):
+            if self.events:
+                return [
+                    "https://www.oocl.com/Pages/ExpressLink.aspx?n=1",
+                    "https://www.cargosmart.com/details?n=1",
+                ]
+            return ["https://www.oocl.com/Pages/ExpressLink.aspx?n=1"]
+
+        async def focus_tab(self, url: str) -> None:
+            self.focused.append(url)
+            self.url = url
+
+        async def evaluate(self, script: str, arg=None):
+            self.evaluate_scripts.append(script)
+            if "OOCL View Details" in script:
+                self.events = 3
+                return 1
+            if "querySelectorAll(\"table\")" in script:
+                return self.events
+            return 0
+
+        async def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+    page = Page("https://www.oocl.com/Pages/ExpressLink.aspx?n=1")
+    tracker = OoclTracker(page)
+    await tracker.expand_result_details()
+    assert page.focused == ["https://www.cargosmart.com/details?n=1"]
+    assert tracker.page is page
+
+
+@pytest.mark.asyncio
+async def test_expand_result_details_skips_when_timeline_is_open():
+    page = _ExpandPage()
+    page.visible_events = 3
+
+    async def evaluate(script: str, arg=None):
+        page.evaluate_scripts.append(script)
+        if "View Details" in script:
+            return 0
+        if "querySelectorAll(\"table\")" in script:
+            return page.visible_events
+        return 0
+
+    page.evaluate = evaluate
+    tracker = OoclTracker(page)
+    await tracker.expand_result_details()
+    assert page.clicked == 0
+    assert tracker._details_expanded is True
+
+
+@pytest.mark.asyncio
+async def test_parse_events_clicks_view_details_before_reading_table():
+    html = (FIXTURES / "sailed.html").read_text(encoding="utf-8")
+    scripts: list[str] = []
+
+    class Page:
+        def __init__(self) -> None:
+            self.events = 0
+
+        async def content(self):
+            return html
+
+        async def evaluate(self, script: str, arg=None):
+            scripts.append(script)
+            if "View Details" in script:
+                self.events = 3
+                return 1
+            if "querySelectorAll(\"table\")" in script:
+                return self.events
+            if "innerText" in script:
+                return "Vessel Departed\nYANTIAN"
+            return 0
+
+        async def wait_for_timeout(self, ms: int) -> None:
+            return None
+
+        async def wait_for_function(self, script, timeout=0):
+            return None
+
+    events = await OoclTracker(Page()).parse_events()
+    assert events[0].type == "DEPA"
+    assert any("View Details" in script for script in scripts)
 
 
 def test_site_404_is_navigation_not_container_miss():

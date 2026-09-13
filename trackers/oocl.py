@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from urllib.parse import quote
@@ -20,6 +21,8 @@ from html_tables import parse_tables
 from models import CanonicalEvent
 from ports import normalize_key
 from trackers.base import COOKIE_BANNER_WAIT_MS, BaseTracker, TrackerError, looks_like_no_result
+
+LOGGER = logging.getLogger("container_tracker")
 
 TRACK_URL = (
     "https://www.oocl.com/eng/ourservices/eservices/cargotracking/"
@@ -68,6 +71,73 @@ _SUBMIT_BUTTON_SELECTORS = (
 _ENTRY_URL_MARKERS = ("cargotracking.aspx",)
 _RESULT_HOSTS = ("oocl.com", "cargosmart.com")
 _BLANK_URLS = ("", "about:blank", "chrome://newtab")
+_VIEW_DETAILS_SELECTORS = (
+    "a:has-text('View Details')",
+    "button:has-text('View Details')",
+    "span:has-text('View Details')",
+    "a:has-text('Show Details')",
+    "button:has-text('Show Details')",
+    "a:has-text('查看详情')",
+    "button:has-text('查看详情')",
+)
+_CLICK_VIEW_DETAILS_JS = """() => {
+    // OOCL View Details
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const labelOf = (el) => (
+        (el.innerText || el.textContent || "")
+        + " "
+        + (el.getAttribute("aria-label") || "")
+        + " "
+        + (el.getAttribute("title") || "")
+        + " "
+        + (el.value || "")
+    ).toLowerCase().replace(/\\s+/g, " ").trim();
+    const isHide = (s) => /hide details|close details|less details|收起详情/.test(s);
+    const isView = (s) => (
+        /(^|\\b)(view|show|display) details?\\b/.test(s)
+        || s.includes("查看详情")
+        || s.includes("查看詳細")
+    ) && !isHide(s);
+    const nodes = [...document.querySelectorAll(
+        "a, button, span, div, input[type=button], input[type=submit], "
+        + "[role=button], [onclick]"
+    )];
+    if (nodes.some((el) => visible(el) && isHide(labelOf(el)))) {
+        return 0;
+    }
+    for (const el of nodes) {
+        if (!visible(el)) continue;
+        const label = labelOf(el);
+        if (!isView(label) || label.length > 48) continue;
+        el.scrollIntoView({ block: "center", inline: "nearest" });
+        el.click();
+        return 1;
+    }
+    return 0;
+}"""
+_VISIBLE_EVENT_COUNT_JS = """() => {
+    let n = 0;
+    for (const table of document.querySelectorAll("table")) {
+        const header = (table.innerText || "").toLowerCase();
+        if (!/(event|dynamic node|status|activity|movement)/.test(header)) continue;
+        for (const tr of table.querySelectorAll("tr")) {
+            const row = (tr.innerText || "").replace(/\\s+/g, " ").trim();
+            if (!row || /^(date|event|status|activity|dynamic node)\\b/i.test(row)) {
+                continue;
+            }
+            if (/\\d{4}|\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\b/i.test(row)) {
+                n += 1;
+            }
+        }
+    }
+    return n;
+}"""
 _SUBMIT_SEARCH_JS = """(container) => {
     if (typeof allowAllCookiePolicy === "function") {
         try { allowAllCookiePolicy(); } catch (err) {}
@@ -347,6 +417,7 @@ class OoclTracker(BaseTracker):
         "table:has-text('Vessel Departed')",
         "table:has-text('Event')",
         "table:has-text('Dynamic Node')",
+        "table:has-text('Container Movement')",
         "[class*='cargo-tracking' i]",
     )
 
@@ -354,6 +425,7 @@ class OoclTracker(BaseTracker):
         super().__init__(page, wait_for_challenge=wait_for_challenge, browser=browser)
         self._entry_page = page
         self._result_urls: list[str] = []
+        self._details_expanded = False
 
     async def _page_challenge_code(self) -> str | None:
         code = await super()._page_challenge_code()
@@ -462,8 +534,82 @@ class OoclTracker(BaseTracker):
         except Exception:  # noqa: BLE001
             return None
 
+    def _as_int(self, value: object) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    async def _sleep(self, ms: int) -> None:
+        waiter = getattr(self.page, "wait_for_timeout", None)
+        if callable(waiter):
+            try:
+                await waiter(ms)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        await asyncio.sleep(max(ms, 0) / 1000)
+
+    async def _visible_event_count(self) -> int:
+        try:
+            return self._as_int(await self.page.evaluate(_VISIBLE_EVENT_COUNT_JS))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    async def _click_view_details(self) -> int:
+        try:
+            clicked = self._as_int(await self.page.evaluate(_CLICK_VIEW_DETAILS_JS))
+            if clicked:
+                return clicked
+        except Exception:  # noqa: BLE001
+            pass
+        for selector in _VIEW_DETAILS_SELECTORS:
+            try:
+                target = self.page.locator(selector)
+                if await target.first.is_visible(timeout=800):
+                    await target.first.click(timeout=3_000)
+                    return 1
+            except Exception:  # noqa: BLE001
+                continue
+        return 0
+
+    async def expand_result_details(self) -> None:
+        """Open View Details so movement events exist before status and screenshot."""
+        if self._details_expanded:
+            return
+        before = await self._visible_event_count()
+        prior: list[str] = []
+        can_see_tabs = callable(getattr(self.page, "list_tab_urls", None)) or getattr(
+            getattr(self.page, "context", None), "pages", None
+        ) is not None
+        if can_see_tabs:
+            prior = await self._tab_urls()
+        clicked = await self._click_view_details()
+        if not clicked:
+            if before >= 1:
+                self._details_expanded = True
+            return
+        prior_set = {url for url in prior if not _is_blank_url(url)}
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if prior_set:
+                await self._focus_new_result(prior_set)
+            now = await self._visible_event_count()
+            if now > before:
+                await self._sleep(400)
+                self._details_expanded = True
+                return
+            await self._sleep(200)
+        self._details_expanded = True
+        LOGGER.info("OOCL View Details stayed collapsed; status and screenshot may lack events.")
+
+    async def prepare_for_screenshot(self) -> None:
+        await self.expand_result_details()
+        await super().prepare_for_screenshot()
+
     async def search(self, container: str) -> None:
         self._search_submitted = False
+        self._details_expanded = False
         await self._focus_entry()
         await self.dismiss_cookies(wait_ms=0)
         await self._select_container_search()
@@ -483,6 +629,7 @@ class OoclTracker(BaseTracker):
         await self._adopt_result_tab(before)
         self._search_submitted = True
         await self._wait_for_results()
+        await self.expand_result_details()
 
     async def _submit_container_search(self, container: str) -> None:
         payload = None
@@ -656,6 +803,7 @@ class OoclTracker(BaseTracker):
     async def track(self, container: str, *, session_ready: bool = False):
         self._entry_page = self.page
         self._result_urls = []
+        self._details_expanded = False
         try:
             return await super().track(container, session_ready=session_ready)
         finally:
@@ -677,6 +825,8 @@ class OoclTracker(BaseTracker):
                 "dynamic node",
                 "container movement",
                 "cargo tracking result",
+                "view details",
+                "show details",
             )
         ) and "unrecognized" not in text
 
@@ -691,6 +841,8 @@ class OoclTracker(BaseTracker):
                         text.includes("vessel departure") ||
                         text.includes("dynamic node") ||
                         text.includes("container movement") ||
+                        text.includes("view details") ||
+                        text.includes("show details") ||
                         text.includes("unrecognized") ||
                         text.includes("no result") ||
                         text.includes("no tracking") ||
@@ -705,6 +857,7 @@ class OoclTracker(BaseTracker):
 
     async def parse_events(self) -> list[CanonicalEvent]:
         await self._wait_for_results()
+        await self.expand_result_details()
         html = await self.page.content()
         text = await self._visible_text()
         if is_oocl_site_error_page(text, html):
