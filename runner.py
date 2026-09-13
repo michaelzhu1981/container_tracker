@@ -34,7 +34,9 @@ from excel_io import (
 )
 from models import TrackResult
 from status_engine import evaluate
+from system_chrome import SystemChromeError, SystemChromePage
 from trackers import TRACKERS
+from trackers.base import TrackerError
 from validate import carrier_supported, container_shape_ok, iso6346_check_digit_ok
 
 LOGGER = logging.getLogger("container_tracker")
@@ -184,6 +186,9 @@ class CarrierBrowser:
         self.page = None
 
     async def start(self) -> None:
+        if uses_system_chrome(self.carrier):
+            await self._start_system_chrome()
+            return
         if self.context is not None:
             try:
                 await self.context.close()
@@ -208,6 +213,21 @@ class CarrierBrowser:
             LOGGER.info("Could not install stealth init script for %s.", self.carrier)
         self.context.set_default_timeout(CARRIER_TIMEOUT_MS.get(self.carrier, NAV_TIMEOUT_MS))
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+
+    async def _start_system_chrome(self) -> None:
+        if self.context is not None:
+            try:
+                await self.context.close()
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Closed Playwright before opening system Chrome for %s.", self.carrier)
+            self.context = None
+        tracker_cls = TRACKERS.get(self.carrier)
+        url = getattr(tracker_cls, "tracking_url", "") if tracker_cls else ""
+        host = "cma-cgm.com" if self.carrier == "CMDU" else ""
+        self.page = SystemChromePage(
+            url, host=host, should_abort=self.should_abort
+        )
+        await self.page.start()
 
     async def ensure_headed(self) -> bool:
         if self.headed:
@@ -288,6 +308,10 @@ class CarrierBrowser:
         return True
 
     async def close(self) -> None:
+        if isinstance(self.page, SystemChromePage):
+            await self.page.close()
+            self.page = None
+            return
         if self.context is None:
             return
         try:
@@ -310,7 +334,13 @@ def update_circuit(streak: int, error_code: str | None) -> tuple[int, bool]:
     return 0, False
 
 
-def _paused_result(row: dict, stamp: str, error_code: str) -> TrackResult:
+def _paused_result(
+    row: dict,
+    stamp: str,
+    error_code: str,
+    *,
+    reason: str | None = None,
+) -> TrackResult:
     return evaluate(
         [],
         container=row["Container"],
@@ -318,11 +348,70 @@ def _paused_result(row: dict, stamp: str, error_code: str) -> TrackResult:
         checked_at=stamp,
         forced_status="CHECK_FAILED",
         error_code=error_code,
-        error=(
+        error=reason
+        or (
             f"Skipped remaining {row['Carrier']} rows after repeated "
             f"{error_code} failures."
         ),
     )
+
+
+def _unlock_failed_result(row: dict, stamp: str, error_code: str) -> TrackResult:
+    status = (
+        "MANUAL_CHECK_REQUIRED"
+        if error_code in {"CAPTCHA", "CLOUDFLARE"}
+        else "CHECK_FAILED"
+    )
+    return evaluate(
+        [],
+        container=row["Container"],
+        carrier=row["Carrier"],
+        checked_at=stamp,
+        forced_status=status,
+        error_code=error_code,
+        error=(
+            f"{error_code} still blocked the current Chrome window. "
+            "Complete verification there, keep the window open, and retry."
+        ),
+    )
+
+
+def unlocks_in_current_browser(carrier: str) -> bool:
+    tracker_cls = TRACKERS.get(carrier)
+    return bool(tracker_cls and getattr(tracker_cls, "wait_in_current_browser", False))
+
+
+def uses_system_chrome(carrier: str) -> bool:
+    """CMDU DataDome fails under Playwright CDP; use the user's Chrome instead."""
+    return carrier == "CMDU"
+
+
+async def unlock_carrier_session(
+    session: CarrierBrowser,
+    carrier: str,
+    *,
+    wait_for_challenge: bool,
+) -> str | None:
+    """Open the tracking page and wait once. Return an error code on failure."""
+    if not wait_for_challenge or not unlocks_in_current_browser(carrier):
+        return None
+    tracker_cls = TRACKERS[carrier]
+    tracker = tracker_cls(session.page, wait_for_challenge=True, browser=session)
+    print(
+        f"Unlocking {carrier} in the current Chrome window. "
+        "Complete the check there and keep the window open; "
+        "batch query starts after it clears."
+    )
+    try:
+        await tracker.prepare_session()
+    except TrackerError as exc:
+        return exc.code
+    except SystemChromeError as exc:
+        LOGGER.info("System Chrome unlock failed for %s: %s", carrier, exc)
+        print(str(exc))
+        return "CAPTCHA"
+    session.page = tracker.page
+    return None
 
 
 def configure_logging() -> Path:
@@ -558,10 +647,105 @@ async def run_batch(
                 allow_stdin=allow_stdin,
                 should_abort=lambda: _cancelled(cancel_event),
             )
-            await session.start()
+            try:
+                await session.start()
+            except SystemChromeError as exc:
+                LOGGER.info("Could not open system Chrome for %s: %s", carrier, exc)
+                print(str(exc))
+                pending = [idx for idx in indices if idx not in skip_indices]
+                if pending:
+                    first_idx = pending[0]
+                    results[first_idx] = _unlock_failed_result(
+                        rows[first_idx], checked_at(), "CAPTCHA"
+                    )
+                    print_progress(first_idx + 1, total, results[first_idx])
+                    notify(
+                        {
+                            "index": first_idx,
+                            "total": total,
+                            "phase": "done",
+                            "result": results[first_idx],
+                        }
+                    )
+                    skip_indices.add(first_idx)
+                    for idx in pending[1:]:
+                        results[idx] = _paused_result(
+                            rows[idx],
+                            checked_at(),
+                            "CAPTCHA",
+                            reason=(
+                                f"Skipped remaining {carrier} rows; "
+                                "open Google Chrome, complete DataDome, and retry."
+                            ),
+                        )
+                        print_progress(idx + 1, total, results[idx])
+                        notify(
+                            {
+                                "index": idx,
+                                "total": total,
+                                "phase": "done",
+                                "result": results[idx],
+                            }
+                        )
+                    written = write_output(written, build_output_frame(rows, results))
+                continue
             streak = 0
             paused_code: str | None = None
+            paused_reason: str | None = None
             try:
+                pending = [idx for idx in indices if idx not in skip_indices]
+                if wait_for_challenge and pending and unlocks_in_current_browser(carrier):
+                    first_idx = pending[0]
+                    session.on_challenge = lambda challenge, index=first_idx: notify({
+                        "index": index,
+                        "total": total,
+                        "phase": "challenge" if challenge.get("code") else "querying",
+                        "challenge": (
+                            {**challenge, "scope": "carrier"}
+                            if challenge.get("code")
+                            else None
+                        ),
+                        "result": None,
+                    })
+                    notify(
+                        {
+                            "index": first_idx,
+                            "total": total,
+                            "phase": "querying",
+                            "result": None,
+                        }
+                    )
+                    unlock_error = await unlock_carrier_session(
+                        session,
+                        carrier,
+                        wait_for_challenge=wait_for_challenge,
+                    )
+                    if unlock_error == "CANCELLED":
+                        cancelled = True
+                        break
+                    if unlock_error:
+                        results[first_idx] = _unlock_failed_result(
+                            rows[first_idx], checked_at(), unlock_error
+                        )
+                        print_progress(first_idx + 1, total, results[first_idx])
+                        notify(
+                            {
+                                "index": first_idx,
+                                "total": total,
+                                "phase": "done",
+                                "result": results[first_idx],
+                            }
+                        )
+                        written = write_output(
+                            written, build_output_frame(rows, results)
+                        )
+                        skip_indices.add(first_idx)
+                        paused_code = unlock_error
+                        paused_reason = (
+                            f"Skipped remaining {carrier} rows; complete "
+                            f"{unlock_error} in the current Chrome window, "
+                            "keep it open, and retry."
+                        )
                 for idx in indices:
                     if _cancelled(cancel_event):
                         cancelled = True
@@ -578,7 +762,12 @@ async def run_batch(
                         )
                         continue
                     if paused_code:
-                        results[idx] = _paused_result(rows[idx], checked_at(), paused_code)
+                        results[idx] = _paused_result(
+                            rows[idx],
+                            checked_at(),
+                            paused_code,
+                            reason=paused_reason,
+                        )
                         print_progress(idx + 1, total, results[idx])  # type: ignore[arg-type]
                         notify(
                             {
@@ -640,6 +829,7 @@ async def run_batch(
                     )
                     if tripped:
                         paused_code = results[idx].error_code if results[idx] else "CLOUDFLARE"
+                        paused_reason = None
                         LOGGER.info(
                             "Pausing remaining %s rows after repeated %s",
                             carrier,

@@ -205,10 +205,23 @@ class JobManager:
                 mode = self.challenge.get("mode")
                 seconds = self.challenge.get("timeout_seconds", 0)
                 if mode == "current_browser":
-                    action = (
-                        "Complete verification in the current Chrome window; keep it open. "
-                        f"Resumes automatically (up to {seconds}s). Stop cancels the wait."
+                    wait_label = (
+                        f"up to {seconds // 60} min"
+                        if seconds >= 60
+                        else f"up to {seconds}s"
                     )
+                    if self.challenge.get("scope") == "carrier":
+                        action = (
+                            "Complete verification in the current Chrome window; "
+                            "keep it open. Batch query starts after it clears "
+                            f"({wait_label}). Stop cancels the wait."
+                        )
+                    else:
+                        action = (
+                            "Complete verification in the current Chrome window; "
+                            "keep it open. "
+                            f"Resumes automatically ({wait_label}). Stop cancels the wait."
+                        )
                 elif mode == "system_chrome":
                     action = "Complete verification in the new system Chrome, then quit that Chrome to resume."
                 else:

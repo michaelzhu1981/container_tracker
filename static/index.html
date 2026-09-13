@@ -232,7 +232,7 @@
         <button id="stopBtn" class="danger" type="button" disabled>Stop job</button>
         <button id="reloadBtn" class="secondary" type="button">Reload from Excel</button>
         <label class="opt" data-tip="Reuse SAILED rows from the existing result file. Those boxes are not queried again."><input id="resume" type="checkbox"> Skip already SAILED</label>
-        <label class="opt" data-tip="If Cloudflare or CAPTCHA still blocks after automatic waits, pause so you can finish the check in Chrome. Turn off to fail those rows and stop that carrier after two repeats."><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
+        <label class="opt" data-tip="If Cloudflare or CAPTCHA still blocks after automatic waits, pause so you can finish the check in Chrome. CMDU opens normal Google Chrome for DataDome, then batch-queries that carrier. Turn off to fail those rows and stop that carrier after two repeats."><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
         <label class="opt" data-tip="Open a visible browser window for every carrier. Off keeps most sites headless; HLCU / MSCU / MAEU / CMDU still open Chrome because of bot checks."><input id="headed" type="checkbox"> Show browser</label>
         <div id="optTip" class="opt-tip" hidden></div>
       </div>

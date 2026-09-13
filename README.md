@@ -13,7 +13,7 @@
 | `ONEY` | ONE | 已实现；默认无头 |
 | `MSCU` | MSC | 已实现；默认打开可见 Chrome（无头会被拦） |
 | `MAEU` | Maersk | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成 |
-| `CMDU` | CMA CGM | 已实现；复用 Tracking 页、表单查询、真实验证码在当前窗口等待完成。还箱超过约 15 天可能无结果 |
+| `CMDU` | CMA CGM | 已实现；用本机普通 Chrome（不用 Playwright）过人机验证后批量查箱。还箱超过约 15 天可能无结果 |
 
 每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU 无头更容易被拦，因此这四家默认 headed。
 
@@ -48,12 +48,12 @@ python app.py --serve
 
 - **Start / Stop / Reload from Excel**：开跑、停在当前箱之后、重新读入输入和已有结果
 - **Skip already SAILED**：复用结果表里已经是 `SAILED` 的行，不再查
-- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。CMDU / MAEU 保留当前窗口；HLCU / MSCU 交给普通系统 Chrome。关掉则自动失败并可能熔断该家
+- **Wait for challenge**：自动等待失败后，等待人工验证（默认开）。CMDU / MAEU 在当前 Chrome 窗口等人过验证，通过后批量查该家剩余箱；HLCU / MSCU 交给普通系统 Chrome。关掉则自动失败并可能熔断该家
 - **Show browser**：所有船公司都开可见窗口；关掉时 HLCU / MSCU / MAEU / CMDU 仍会开 Chrome
 - 按船公司筛选本次要查的家；点 Summary 行或状态计数可过滤表格
 - 按船公司看完成进度（含百分比）
 
-网页会显示验证码等待状态和对应操作。CMDU / MAEU：在当前 Chrome 里完成验证并保持窗口打开，程序自动继续，等待中可点 Stop。HLCU / MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
+网页会显示验证码等待状态和对应操作。CMDU / MAEU：先在当前 Chrome 里完成验证并保持窗口打开，通过后按箱批量查询，等待中可点 Stop。HLCU / MSCU 交接到普通系统 Chrome 时：完成验证、出现搜索框后 **Cmd+Q**，程序重新打开同一资料目录查询。
 
 ## 命令行
 
@@ -115,7 +115,7 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 1. 只识别验证提示或可见验证 iframe；Cookie 说明里的 `.hcaptcha.com`、SDK 脚本和隐藏组件不算挑战。
 2. 先等最多 25 秒，让非交互 JS 挑战自行消失。
-3. CMDU / MAEU 仍有挑战时，保留当前 Chrome 窗口，最多等 180 秒人工完成；**不要退出 Chrome**。验证码消失后自动继续，必要时重新提交当前箱号一次；Stop 可取消等待。
+3. CMDU 打开本机普通 Google Chrome（无远程调试）。在该窗口完成 DataDome，**不要关闭**。最多等 10 分钟；通过后批量查箱。若 Chrome 提示，打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。MAEU 仍在当前自动化窗口等待。Stop 可取消等待。
 4. HLCU / MSCU 仍使用普通系统 Chrome 交接：完成验证、出现搜索框后退出该 Chrome，程序重新打开同一资料目录查询。
 5. 每箱最多进入一次人工验证流程；验证后再次被拦则记录失败。无人值守遇到 CAPTCHA 不反复刷新；连续两箱被拦会停止该家剩余查询。
 

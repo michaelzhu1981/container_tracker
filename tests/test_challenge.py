@@ -187,6 +187,24 @@ class DummyTracker(BaseTracker):
         return []
 
 
+def test_wait_does_not_clear_when_js_gone_but_snapshot_still_captcha(monkeypatch):
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 400)
+    monkeypatch.setattr("trackers.base.CHALLENGE_RETRY_DELAYS", ())
+    page = FakePage(text="Please complete the CAPTCHA")
+
+    async def pretend_gone(script, timeout=0, polling=None):
+        page.calls += 1
+        return True
+
+    page.wait_for_function = pretend_gone  # type: ignore[method-assign]
+    tracker = DummyTracker(page, wait_for_challenge=False)
+    with pytest.raises(TrackerError) as exc:
+        asyncio.run(tracker.pass_or_wait_for_challenge())
+    assert exc.value.code == "CAPTCHA"
+    assert page.calls >= 1
+    assert challenge_code(page.text) == "CAPTCHA"
+
+
 def test_auto_wait_clears_without_human(monkeypatch):
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 200)
     monkeypatch.setattr("trackers.base.CHALLENGE_RETRY_DELAYS", ())
@@ -268,7 +286,7 @@ def test_cmdu_maeu_keep_verification_in_same_window(monkeypatch, tracker_name):
     from trackers.maersk import MaerskTracker
 
     monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
-    page = FakePage(text="Please complete the CAPTCHA", succeed_on_call=2)
+    page = FakePage(text="Please complete the CAPTCHA", succeed_on_call=1)
     browser = _HandoffBrowser(page)
     messages = []
     browser.on_challenge = messages.append
@@ -284,7 +302,35 @@ def test_cmdu_maeu_keep_verification_in_same_window(monkeypatch, tracker_name):
     with pytest.raises(TrackerError) as exc:
         asyncio.run(tracker.pass_or_wait_for_challenge())
     assert exc.value.code == "CAPTCHA"
-    assert page.calls == 2
+    assert page.calls == 1
+
+
+def test_cma_prepare_session_waits_in_current_window(monkeypatch):
+    from trackers.cma import CmaTracker
+
+    monkeypatch.setattr("trackers.base.AUTO_CHALLENGE_WAIT_MS", 50)
+    monkeypatch.setattr("trackers.base.CURRENT_BROWSER_WAIT_MS", 5_000)
+    page = FakePage(text="Please complete the CAPTCHA", succeed_on_call=1)
+    page.url = "https://www.cma-cgm.com/ebusiness/tracking"
+    browser = _HandoffBrowser(page)
+    tracker = CmaTracker(page, wait_for_challenge=True, browser=browser)
+    asyncio.run(tracker.prepare_session())
+    assert browser.handed is False
+    assert tracker.page is page
+    assert challenge_code(page.text) is None
+
+
+def test_cma_prepare_session_skips_wait_when_page_is_clear():
+    from trackers.cma import CmaTracker
+
+    page = FakePage(text="Search\nContainer No.")
+    page.url = "https://www.cma-cgm.com/ebusiness/tracking"
+    browser = _HandoffBrowser(page)
+    tracker = CmaTracker(page, wait_for_challenge=True, browser=browser)
+    asyncio.run(tracker.prepare_session())
+    assert browser.handed is False
+    assert page.gotos == []
+    assert page.calls == 0
 
 
 @pytest.mark.asyncio

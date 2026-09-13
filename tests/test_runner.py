@@ -8,11 +8,23 @@ from runner import (
     chrome_launch_args,
     playwright_context_kwargs,
     should_relaunch_browser_per_box,
+    unlocks_in_current_browser,
     update_circuit,
+    uses_system_chrome,
     wait_for_human_after_chrome_handoff,
     wait_for_system_chrome_closed,
 )
 from cli import build_parser
+
+
+def test_cmdu_unlocks_in_current_browser():
+    assert unlocks_in_current_browser("CMDU") is True
+    assert unlocks_in_current_browser("MAEU") is True
+    assert unlocks_in_current_browser("HLCU") is False
+    assert unlocks_in_current_browser("MSCU") is False
+    assert uses_system_chrome("CMDU") is True
+    assert uses_system_chrome("MAEU") is False
+    assert uses_system_chrome("HLCU") is False
 
 
 def test_hlcu_does_not_relaunch_browser_per_box():
@@ -224,3 +236,126 @@ async def test_run_batch_stops_remaining_on_cancel(tmp_path: Path, monkeypatch):
     assert tracked == ["HLXU1234567"]
     assert [item.container for item in results] == ["HLXU1234567"]
     assert written.exists()
+
+
+def _fake_playwright_browser(monkeypatch):
+    class FakePlaywright:
+        pass
+
+    class CM:
+        async def __aenter__(self):
+            return FakePlaywright()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeBrowser:
+        def __init__(self, playwright, carrier, **kwargs):
+            self.page = object()
+            self.on_challenge = None
+
+        async def start(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def ensure_open(self):
+            return None
+
+        def page_open(self):
+            return True
+
+    monkeypatch.setattr("playwright.async_api.async_playwright", lambda: CM())
+    monkeypatch.setattr("runner.CarrierBrowser", FakeBrowser)
+
+
+@pytest.mark.asyncio
+async def test_cmdu_unlocks_once_then_batches(tmp_path: Path, monkeypatch):
+    from models import TrackResult
+    from runner import run_batch
+
+    prepared: list[str] = []
+    tracked: list[str] = []
+
+    async def fake_prepare(self):
+        prepared.append(self.carrier_code)
+
+    async def fake_track(page, carrier, container, **kwargs):
+        tracked.append(container)
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    async def no_sleep(seconds, cancel_event):
+        return False
+
+    monkeypatch.setattr("trackers.cma.CmaTracker.prepare_session", fake_prepare)
+    monkeypatch.setattr("runner._track_one", fake_track)
+    monkeypatch.setattr("runner.sleep_or_cancel", no_sleep)
+    _fake_playwright_browser(monkeypatch)
+
+    rows = [
+        {"Container": "ECMU7271573", "Carrier": "CMDU", "extras": {}},
+        {"Container": "CMAU7662786", "Carrier": "CMDU", "extras": {}},
+    ]
+    results, written = await run_batch(
+        rows,
+        output_path=tmp_path / "out.xlsx",
+        wait_for_challenge=True,
+    )
+    assert prepared == ["CMDU"]
+    assert tracked == ["ECMU7271573", "CMAU7662786"]
+    assert [item.status for item in results] == ["NOT_LOADED", "NOT_LOADED"]
+    assert written.exists()
+
+
+@pytest.mark.asyncio
+async def test_cmdu_unlock_failure_pauses_remaining(tmp_path: Path, monkeypatch):
+    from models import TrackResult
+    from runner import run_batch
+    from trackers.base import TrackerError
+
+    tracked: list[str] = []
+
+    async def fail_prepare(self):
+        raise TrackerError("Timed out waiting for the CAPTCHA check to clear.", "CAPTCHA")
+
+    async def fake_track(page, carrier, container, **kwargs):
+        tracked.append(container)
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    monkeypatch.setattr("trackers.cma.CmaTracker.prepare_session", fail_prepare)
+    monkeypatch.setattr("runner._track_one", fake_track)
+    _fake_playwright_browser(monkeypatch)
+
+    rows = [
+        {"Container": "ECMU7271573", "Carrier": "CMDU", "extras": {}},
+        {"Container": "CMAU7662786", "Carrier": "CMDU", "extras": {}},
+        {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
+    ]
+    results, _written = await run_batch(
+        rows,
+        output_path=tmp_path / "out.xlsx",
+        wait_for_challenge=True,
+    )
+    assert tracked == ["YMLU1234567"]
+    by_container = {item.container: item for item in results}
+    assert by_container["ECMU7271573"].status == "MANUAL_CHECK_REQUIRED"
+    assert by_container["ECMU7271573"].error_code == "CAPTCHA"
+    assert by_container["CMAU7662786"].status == "CHECK_FAILED"
+    assert by_container["CMAU7662786"].error_code == "CAPTCHA"
+    assert "current Chrome window" in (by_container["CMAU7662786"].error or "")
+    assert by_container["YMLU1234567"].status == "NOT_LOADED"

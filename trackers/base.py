@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from artifacts import checked_at, html_path, relative_to_root, screenshot_path
-from config import AUTO_CHALLENGE_WAIT_MS, CHALLENGE_RETRY_DELAYS, CHALLENGE_WAIT_MS
+from config import (
+    AUTO_CHALLENGE_WAIT_MS,
+    CHALLENGE_RETRY_DELAYS,
+    CHALLENGE_WAIT_MS,
+    CURRENT_BROWSER_WAIT_MS,
+)
 from challenges import CHALLENGE_CODE_JS, CHALLENGE_GONE_JS, challenge_code
 from models import CanonicalEvent, TimelineOrder, TrackResult
 from status_engine import evaluate
@@ -220,28 +226,52 @@ class BaseTracker(ABC):
             report({"code": code, "mode": mode, "timeout_seconds": timeout_ms // 1000})
 
     async def _wait_challenge_gone(self, timeout_ms: int) -> bool:
-        self._check_cancelled()
-        wait = asyncio.create_task(
-            self.page.wait_for_function(_CHALLENGE_GONE_JS, timeout=timeout_ms, polling=500)
-        )
-        try:
-            while not wait.done():
-                await asyncio.wait({wait}, timeout=0.25)
-                self._check_cancelled()
-            await wait
-            return True
-        except TrackerError:
-            raise
-        except Exception:  # noqa: BLE001
-            return False
-        finally:
-            if not wait.done():
-                wait.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+        deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+        while True:
+            self._check_cancelled()
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            wait = asyncio.create_task(
+                self.page.wait_for_function(
+                    _CHALLENGE_GONE_JS, timeout=remaining_ms, polling=500
+                )
+            )
+            try:
+                while not wait.done():
+                    await asyncio.wait({wait}, timeout=0.25)
+                    self._check_cancelled()
                 await wait
+            except TrackerError:
+                if not wait.done():
+                    wait.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await wait
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if not wait.done():
+                    wait.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await wait
+                if "timeout" in type(exc).__name__.lower():
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(0.25)
+                continue
+            leftover = await self._page_challenge_code()
+            if not leftover:
+                return True
+            await asyncio.sleep(0.25)
 
     async def _after_challenge_cleared(self) -> str | None:
-        await self.page.wait_for_timeout(1000)
+        leftover = await self._page_challenge_code()
+        if leftover:
+            return leftover
+        await self.page.wait_for_timeout(800)
+        leftover = await self._page_challenge_code()
+        if leftover:
+            return leftover
         await self.dismiss_cookies(wait_ms=5000)
         return await self._page_challenge_code()
 
@@ -275,6 +305,23 @@ class BaseTracker(ABC):
         except Exception:  # noqa: BLE001
             LOGGER.info("Reload after challenge failed for %s", self.carrier_code)
 
+    async def prepare_session(self) -> None:
+        """Open the tracking page and wait once before a carrier batch."""
+        await self.open_page()
+        if await self._page_challenge_code():
+            await self.pass_or_wait_for_challenge()
+            return
+        await self.dismiss_cookies()
+        dismiss_timeout = getattr(self, "dismiss_session_timeout", None)
+        if callable(dismiss_timeout):
+            try:
+                await dismiss_timeout()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _current_browser_wait_ms(self) -> int:
+        return CURRENT_BROWSER_WAIT_MS if self.wait_in_current_browser else CHALLENGE_WAIT_MS
+
     async def _page_challenge_code(self) -> str | None:
         try:
             code = await self.page.evaluate(CHALLENGE_CODE_JS)
@@ -299,30 +346,34 @@ class BaseTracker(ABC):
                 f"{code} returned after verification; retry this carrier later.", code
             )
 
-        auto_s = AUTO_CHALLENGE_WAIT_MS // 1000
-        LOGGER.info("Waiting up to %ss for %s to clear automatically", auto_s, code)
-        self._report_challenge(code, "automatic", AUTO_CHALLENGE_WAIT_MS)
-        if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
-            leftover = await self._after_challenge_cleared()
-            if not leftover:
-                self._report_challenge(None)
-                return True
-            code = leftover
+        skip_auto = code == "CAPTCHA" and self.wait_in_current_browser
+        if not skip_auto:
+            auto_s = AUTO_CHALLENGE_WAIT_MS // 1000
+            LOGGER.info("Waiting up to %ss for %s to clear automatically", auto_s, code)
+            self._report_challenge(code, "automatic", AUTO_CHALLENGE_WAIT_MS)
+            if await self._wait_challenge_gone(AUTO_CHALLENGE_WAIT_MS):
+                leftover = await self._after_challenge_cleared()
+                if not leftover:
+                    self._report_challenge(None)
+                    return True
+                code = leftover
 
         if self.wait_for_challenge:
             self._human_wait_used = True
             if self.wait_in_current_browser:
-                seconds = CHALLENGE_WAIT_MS // 1000
+                wait_ms = self._current_browser_wait_ms()
+                seconds = wait_ms // 1000
                 LOGGER.info(
                     "Waiting up to %ss for %s in the current %s window; keep it open",
                     seconds, code, self.carrier_code,
                 )
-                self._report_challenge(code, "current_browser", CHALLENGE_WAIT_MS)
+                self._report_challenge(code, "current_browser", wait_ms)
                 print(
                     f"Complete {code} in the current {self.carrier_code} Chrome window. "
-                    "Keep it open; tracking resumes automatically. Stop cancels this wait."
+                    "Keep it open. After it clears, remaining containers are queried "
+                    "in this window. Stop cancels this wait."
                 )
-                if await self._wait_challenge_gone(CHALLENGE_WAIT_MS):
+                if await self._wait_challenge_gone(wait_ms):
                     leftover = await self._after_challenge_cleared()
                     if not leftover:
                         self._report_challenge(None)

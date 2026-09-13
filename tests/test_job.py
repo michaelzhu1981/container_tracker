@@ -90,6 +90,25 @@ def test_challenge_progress_exposes_action_and_clears_on_resume(tmp_path):
     assert manager.snapshot()["job"]["challenge"] is None
 
 
+def test_challenge_progress_carrier_unlock_mentions_batch(tmp_path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("ECMU7271573", "CMDU"), ("CMAU7662786", "CMDU")])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    manager._on_progress({
+        "index": 0, "phase": "challenge",
+        "challenge": {
+            "code": "CAPTCHA",
+            "mode": "current_browser",
+            "timeout_seconds": 600,
+            "scope": "carrier",
+        },
+    })
+    message = manager.snapshot()["job"]["message"]
+    assert "Batch query" in message
+    assert "keep it open" in message
+    assert "up to 10 min" in message
+
+
 def test_job_snapshot_merges_previous_results(tmp_path: Path):
     from excel_io import build_output_frame, write_output
 
