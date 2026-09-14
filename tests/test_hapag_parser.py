@@ -119,3 +119,51 @@ def test_expand_result_details_skips_click_when_timeline_is_open():
     tracker = HapagTracker(page)
     asyncio.run(tracker.expand_result_details())
     assert page.clicked == 0
+
+
+def test_dismiss_onboarding_ignores_privacy_dialog():
+    class Page:
+        def __init__(self) -> None:
+            self.scripts: list[str] = []
+            self.waits: list[int] = []
+
+        async def evaluate(self, script: str):
+            self.scripts.append(script)
+            assert "privacy preference" in script.lower()
+            return False
+
+        def locator(self, selector: str):
+            raise AssertionError(f"onboarding should not probe locators: {selector}")
+
+        async def wait_for_timeout(self, ms: int) -> None:
+            self.waits.append(ms)
+
+    page = Page()
+    tracker = HapagTracker(page)
+    asyncio.run(tracker.dismiss_onboarding())
+    assert len(page.scripts) == 1
+    assert page.waits == []
+
+
+def test_wait_for_results_requires_this_container_not_any_table():
+    seen: list[str] = []
+
+    class Page:
+        async def wait_for_function(self, script: str, timeout=0, polling=None):
+            seen.append(script)
+            return True
+
+        async def evaluate(self, script: str):
+            return 0
+
+        def locator(self, selector: str):
+            raise AssertionError(selector)
+
+    tracker = HapagTracker(Page())
+    asyncio.run(tracker._wait_for_results("HLXU1234567"))
+    assert seen
+    script = seen[0]
+    assert "hlxu1234567" in script
+    assert "tr.q-tr--hal" in script
+    assert ".hal-event" in script
+    assert "table tbody tr" not in script

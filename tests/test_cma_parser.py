@@ -142,3 +142,38 @@ def test_expand_result_details_clicks_previous_moves_and_waits():
     assert page.clicked == 1
     assert page.visible_events == 3
     assert any("Display Previous Moves" in script for script in page.evaluate_scripts)
+
+
+def test_expand_result_details_skips_when_timeline_already_visible():
+    page = _ExpandPage()
+    page.visible_events = 7
+    tracker = CmaTracker(page)
+    asyncio.run(tracker.expand_result_details())
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 0
+    assert page.visible_events == 7
+
+
+def test_expand_result_details_does_not_poll_when_click_adds_nothing():
+    class Page(_ExpandPage):
+        async def evaluate(self, script: str):
+            self.evaluate_scripts.append(script)
+            if "Display Previous Moves" in script:
+                self.clicked += 1
+                return 1
+            if "capsule" in script:
+                return self.visible_events
+            return 0
+
+        async def wait_for_timeout(self, ms: int) -> None:
+            self.evaluate_scripts.append(f"wait:{ms}")
+
+    page = Page()
+    page.visible_events = 1
+    tracker = CmaTracker(page)
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 1
+    waits = [item for item in page.evaluate_scripts if str(item).startswith("wait:")]
+    assert waits == ["wait:200", "wait:200", "wait:200", "wait:200"]
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 1

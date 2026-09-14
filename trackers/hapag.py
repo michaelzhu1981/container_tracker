@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-import time
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -21,12 +21,46 @@ from trackers.base import BaseTracker, TrackerError, challenge_code
 
 LOGGER = logging.getLogger("container_tracker")
 
-_EXPAND_BUTTON = (
-    "table:has-text('Latest Event') tbody tr.q-tr--hal:visible "
-    "button.q-btn--icon-only"
-)
-_EXPAND_ROW = "table:has-text('Latest Event') tbody tr.q-tr--hal:visible"
-_DETAILS = ".hal-event-tracking"
+_EXPAND_POLLS = 4
+
+_DISMISS_TOUR_JS = """() => {
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const isPrivacy = (el) => {
+        const label = (el.getAttribute("aria-label") || "").toLowerCase();
+        const text = (el.innerText || "").toLowerCase();
+        return label.includes("privacy") || label.includes("cookie")
+            || label.includes("consent") || text.includes("privacy preference")
+            || text.includes("cookie");
+    };
+    const tour = [...document.querySelectorAll(".q-dialog--modal, [role='dialog']")].find((el) => {
+        if (!visible(el) || isPrivacy(el)) return false;
+        if (el.classList.contains("no-pointer-events")) return false;
+        const text = (el.innerText || "").toLowerCase();
+        const buttons = [...el.querySelectorAll("button")].map((btn) => (
+            (btn.innerText || "") + " " + (btn.getAttribute("aria-label") || "")
+        ).toLowerCase());
+        return /skip|got it|tracking beta|welcome/.test(text)
+            || buttons.some((label) => /skip|next|got it|start|done/.test(label));
+    });
+    if (!tour) return false;
+    const buttons = [...tour.querySelectorAll("button")].filter(visible);
+    const byLabel = (re) => buttons.find((btn) => re.test(
+        ((btn.innerText || "") + " " + (btn.getAttribute("aria-label") || "")).toLowerCase()
+    ));
+    const target = byLabel(/skip|got it|done/)
+        || byLabel(/close/)
+        || tour.querySelector("button.q-btn--icon-only")
+        || byLabel(/next|start/);
+    if (target) target.click();
+    else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return true;
+}"""
 
 _CLICK_EXPAND_JS = """() => {
     const visible = (el) => {
@@ -261,24 +295,9 @@ class HapagTracker(BaseTracker):
 
     async def _click_expand(self) -> int:
         try:
-            clicked = await self.page.evaluate(_CLICK_EXPAND_JS)
-            if clicked:
-                return int(clicked)
+            return int(await self.page.evaluate(_CLICK_EXPAND_JS) or 0)
         except Exception:  # noqa: BLE001
-            pass
-        for selector in (
-            "tr.q-tr--hal button.q-btn--icon-only",
-            _EXPAND_BUTTON,
-            _EXPAND_ROW,
-        ):
-            target = self.page.locator(selector)
-            try:
-                if await target.first.is_visible(timeout=800):
-                    await target.first.click(timeout=3_000)
-                    return 1
-            except Exception:  # noqa: BLE001
-                continue
-        return 0
+            return 0
 
     async def expand_result_details(self) -> None:
         """Open the right-hand chevron so movement details are visible."""
@@ -286,15 +305,15 @@ class HapagTracker(BaseTracker):
         if before > 0:
             return
         clicked = await self._click_expand()
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline:
+        if not clicked:
+            return
+        for _ in range(_EXPAND_POLLS):
             now = await self._visible_event_count()
             if now > before:
                 await self.page.wait_for_timeout(400)
                 return
             await self.page.wait_for_timeout(200)
-        if clicked:
-            LOGGER.info("Hapag result details stayed collapsed; screenshot may lack events.")
+        LOGGER.info("Hapag result details stayed collapsed; screenshot may lack events.")
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -302,40 +321,15 @@ class HapagTracker(BaseTracker):
 
     async def dismiss_onboarding(self) -> None:
         """Close the Tracking Beta welcome tour so the search field is actionable."""
-        dialog = self.page.locator(".q-dialog--modal, [role='dialog']")
         try:
-            await dialog.first.wait_for(state="visible", timeout=4_000)
+            acted = await self.page.evaluate(_DISMISS_TOUR_JS)
         except Exception:  # noqa: BLE001
             return
-        close = self.page.locator(
-            ".q-dialog--modal button.q-btn--icon-only, "
-            ".q-dialog--modal button[aria-label*='close' i], "
-            "[role='dialog'] button:has-text('Skip')"
-        )
+        if acted is not True:
+            return
+        await self.page.wait_for_timeout(300)
         try:
-            if await close.first.is_visible(timeout=800):
-                await close.first.click(timeout=3_000, force=True)
-                await self.page.wait_for_timeout(400)
-        except Exception:  # noqa: BLE001
-            pass
-        for _ in range(4):
-            next_btn = self.page.locator(
-                ".q-dialog--modal button:has-text('Next'), "
-                ".q-dialog--modal button:has-text('Got it'), "
-                ".q-dialog--modal button:has-text('Done'), "
-                ".q-dialog--modal button:has-text('Start')"
-            )
-            try:
-                if await next_btn.first.is_visible(timeout=500):
-                    await next_btn.first.click(timeout=3_000)
-                    await self.page.wait_for_timeout(400)
-                    continue
-            except Exception:  # noqa: BLE001
-                break
-            break
-        try:
-            await self.page.keyboard.press("Escape")
-            await self.page.wait_for_timeout(300)
+            await self.page.evaluate(_DISMISS_TOUR_JS)
         except Exception:  # noqa: BLE001
             pass
 
@@ -415,26 +409,34 @@ class HapagTracker(BaseTracker):
                 continue
         if not clicked:
             await field.press("Enter")
+        await self._wait_for_results(container)
+
+    async def _wait_for_results(self, container: str) -> None:
+        needle = json.dumps(container.lower())
         try:
             await self.page.wait_for_function(
                 """() => {
+                    const needle = NEEDLE;
                     const text = (document.body && document.body.innerText || "").toLowerCase();
-                    return (
+                    if ((DETECT_CHALLENGE)()) return true;
+                    const noResult = (
                         text.includes("no result") ||
                         text.includes("not found") ||
                         text.includes("could not find") ||
                         text.includes("can't identify") ||
                         text.includes("cannot identify") ||
                         text.includes("no tracking") ||
-                        text.includes("number is not valid") ||
-                        text.includes("latest event") ||
-                        text.includes("shipment details") ||
-                        text.includes("tracking details") ||
-                        !!document.querySelector(".hal-event") ||
-                        !!document.querySelector("table tbody tr") ||
-                        (DETECT_CHALLENGE)()
+                        text.includes("number is not valid")
                     );
-                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                    if (noResult) return true;
+                    const hasResult = (
+                        !!document.querySelector(".hal-event") ||
+                        !!document.querySelector("tr.q-tr--hal")
+                    );
+                    return hasResult && text.includes(needle);
+                }""".replace("NEEDLE", needle).replace(
+                    "DETECT_CHALLENGE", CHALLENGE_CODE_JS
+                ),
                 timeout=20_000,
             )
         except Exception:  # noqa: BLE001

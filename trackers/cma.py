@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 
 from challenges import CHALLENGE_CODE_JS
 from event_text import (
@@ -95,6 +94,31 @@ _VESSEL_CELL_RE = re.compile(
     re.S | re.I,
 )
 _SKIP_STATUS = frozenset({"", "moves", "move", "event", "status", "activity"})
+_EXPAND_POLLS = 4
+
+_DISMISS_SESSION_TIMEOUT_JS = """() => {
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const buttons = [...document.querySelectorAll("button")].filter(visible);
+    const labelOf = (el) => (
+        (el.innerText || el.textContent || "") + " " + (el.getAttribute("aria-label") || "")
+    ).toLowerCase();
+    const login = buttons.find((el) => labelOf(el).includes("go to the login page"));
+    if (login) return "login";
+    const stay = buttons.find((el) => {
+        const label = labelOf(el);
+        return label.includes("i am here") || label.includes("let's continue")
+            || label.includes("lets continue");
+    });
+    if (!stay) return false;
+    stay.click();
+    return true;
+}"""
 _TRANSPORT_MAP: dict[str, TransportMode] = {
     "VESSEL": "VESSEL",
     "FEEDER": "FEEDER",
@@ -449,22 +473,18 @@ class CmaTracker(BaseTracker):
     )
 
     async def dismiss_session_timeout(self) -> None:
-        for selector in (
-            "button:has-text('I am here')",
-            "button:has-text(\"let's continue\")",
-            "button:has-text('Go to the login page')",
-        ):
-            button = self.page.locator(selector)
+        try:
+            handled = await self.page.evaluate(_DISMISS_SESSION_TIMEOUT_JS)
+        except Exception:  # noqa: BLE001
+            return
+        if handled == "login":
             try:
-                if await button.first.is_visible(timeout=600):
-                    if "login" in selector.lower():
-                        await self.page.keyboard.press("Escape")
-                        return
-                    await button.first.click(timeout=3_000)
-                    await self.page.wait_for_timeout(300)
-                    return
+                await self.page.keyboard.press("Escape")
             except Exception:  # noqa: BLE001
-                continue
+                pass
+            return
+        if handled:
+            await self.page.wait_for_timeout(300)
 
     async def _visible_event_count(self) -> int:
         try:
@@ -474,42 +494,31 @@ class CmaTracker(BaseTracker):
 
     async def _click_previous_moves(self) -> int:
         try:
-            clicked = await self.page.evaluate(_CLICK_PREVIOUS_MOVES_JS)
-            if clicked:
-                return int(clicked)
+            return int(await self.page.evaluate(_CLICK_PREVIOUS_MOVES_JS) or 0)
         except Exception:  # noqa: BLE001
-            pass
-        for selector in (
-            "a[aria-label='Display Previous Moves']",
-            "a:has-text('Display Previous Moves')",
-            "a:has-text('Display Details')",
-            ".k-hierarchy-cell[aria-expanded='false'] a",
-        ):
-            target = self.page.locator(selector)
-            try:
-                if await target.first.is_visible(timeout=800):
-                    await target.first.click(timeout=3_000)
-                    return 1
-            except Exception:  # noqa: BLE001
-                continue
-        return 0
+            return 0
 
     async def expand_result_details(self) -> None:
-        before = await self._visible_event_count()
-        clicked = await self._click_previous_moves()
-        if not clicked and before > 1:
+        if getattr(self, "_details_expanded", False):
             return
-        deadline = time.monotonic() + 8
-        while time.monotonic() < deadline:
-            now = await self._visible_event_count()
-            if clicked and now > before:
-                await self.page.wait_for_timeout(400)
-                return
-            if not clicked and now >= 1:
-                return
-            await self.page.wait_for_timeout(200)
+        before = await self._visible_event_count()
+        # Grid/JSON already has the timeline. Clicking "Previous Moves" via
+        # Apple Events often reports success without adding capsules, then
+        # the old 8s wait ran again from parse and screenshot.
+        if before > 1:
+            self._details_expanded = True
+            return
+        clicked = await self._click_previous_moves()
         if clicked:
-            LOGGER.info("CMA previous moves stayed collapsed; screenshot may lack older events.")
+            for _ in range(_EXPAND_POLLS):
+                now = await self._visible_event_count()
+                if now > before:
+                    await self.page.wait_for_timeout(400)
+                    break
+                await self.page.wait_for_timeout(200)
+            else:
+                LOGGER.info("CMA previous moves stayed collapsed; screenshot may lack older events.")
+        self._details_expanded = True
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -523,6 +532,7 @@ class CmaTracker(BaseTracker):
 
     async def search(self, container: str) -> None:
         self._search_submitted = False
+        self._details_expanded = False
         if await self._page_challenge_code():
             return
         await self.dismiss_cookies(wait_ms=0)

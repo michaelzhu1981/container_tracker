@@ -4,8 +4,10 @@ import pytest
 
 from trackers.base import (
     COOKIE_BANNER_WAIT_MS,
+    COOKIE_SELECTORS,
     BaseTracker,
     TrackerError,
+    _CLICK_COOKIE_JS,
     challenge_code,
     is_query_screenshot_page,
     looks_like_no_result,
@@ -250,6 +252,13 @@ class DummyTracker(BaseTracker):
         return []
 
 
+def test_click_cookie_js_covers_playwright_has_text_selectors():
+    assert "onetrust-accept-btn-handler" in _CLICK_COOKIE_JS
+    assert "Select All" in _CLICK_COOKIE_JS
+    assert "Accept All Cookies" in _CLICK_COOKIE_JS
+    assert len(COOKIE_SELECTORS) == _CLICK_COOKIE_JS.count('"css":')
+
+
 @pytest.mark.asyncio
 async def test_dismiss_cookies_caps_banner_wait():
     seen: list[float] = []
@@ -267,10 +276,49 @@ async def test_dismiss_cookies_caps_banner_wait():
 
             return Loc()
 
+        async def evaluate(self, script, arg=None):
+            return False
+
     tracker = DummyTracker(Page(text="ok"))
     await tracker.dismiss_cookies(wait_ms=20_000)
     assert seen == [COOKIE_BANNER_WAIT_MS]
     assert COOKIE_BANNER_WAIT_MS <= 800
+
+
+@pytest.mark.asyncio
+async def test_dismiss_cookies_uses_one_evaluate_when_banner_already_gone():
+    class Page(FakePage):
+        def locator(self, selector):
+            raise AssertionError(f"cookie dismiss should not probe locators: {selector}")
+
+        async def evaluate(self, script, arg=None):
+            self.calls += 1
+            assert "onetrust-accept-btn-handler" in script
+            assert "Accept All" in script
+            return False
+
+    page = Page(text="ok")
+    await DummyTracker(page).dismiss_cookies(wait_ms=0)
+    assert page.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_cookies_clicks_via_js_then_rescans():
+    class Page(FakePage):
+        def locator(self, selector):
+            raise AssertionError(selector)
+
+        async def evaluate(self, script, arg=None):
+            self.calls += 1
+            return True
+
+        async def wait_for_timeout(self, ms):
+            self.gotos.append(ms)
+
+    page = Page(text="ok")
+    await DummyTracker(page).dismiss_cookies(wait_ms=0)
+    assert page.calls == 2
+    assert page.gotos == [400]
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, suppress
@@ -50,6 +52,50 @@ COOKIE_SELECTORS = (
     "button.onetrust-close-btn-handler",
     "#onetrust-close-btn-container button",
 )
+
+_COOKIE_HAS_TEXT_RE = re.compile(r"^(.*):has-text\((['\"])(.*)\2\)$")
+
+
+def _click_cookie_js() -> str:
+    """One DOM pass; Playwright :has-text selectors are not valid CSS."""
+    targets: list[dict[str, str | None]] = []
+    for selector in COOKIE_SELECTORS:
+        match = _COOKIE_HAS_TEXT_RE.fullmatch(selector)
+        if match:
+            targets.append({"css": match.group(1), "text": match.group(3)})
+        else:
+            targets.append({"css": selector, "text": None})
+    return """() => {
+        const targets = """ + json.dumps(targets) + """;
+        const visible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            return rect.width > 8 && rect.height > 8
+                && cs.display !== "none" && cs.visibility !== "hidden";
+        };
+        const labelOf = (el) => (
+            (el.innerText || el.textContent || "")
+            + " "
+            + (el.getAttribute("aria-label") || "")
+        ).toLowerCase();
+        for (const target of targets) {
+            let nodes;
+            try { nodes = document.querySelectorAll(target.css); }
+            catch (err) { continue; }
+            const needle = target.text ? target.text.toLowerCase() : null;
+            for (const el of nodes) {
+                if (!visible(el)) continue;
+                if (needle && !labelOf(el).includes(needle)) continue;
+                el.click();
+                return true;
+            }
+        }
+        return false;
+    }"""
+
+
+_CLICK_COOKIE_JS = _click_cookie_js()
 
 _HIDE_OVERLAYS_JS = """() => {
     const selectors = [
@@ -209,6 +255,12 @@ class BaseTracker(ABC):
         self._html: Path | None = None
         self._human_wait_used = False
 
+    async def _click_cookie_banner(self) -> bool:
+        try:
+            return await self.page.evaluate(_CLICK_COOKIE_JS) is True
+        except Exception:  # noqa: BLE001
+            return False
+
     async def dismiss_cookies(self, wait_ms: int = COOKIE_BANNER_WAIT_MS) -> None:
         appear_ms = 0 if wait_ms <= 0 else min(wait_ms, COOKIE_BANNER_WAIT_MS)
         if appear_ms:
@@ -218,30 +270,13 @@ class BaseTracker(ABC):
                 ).first.wait_for(state="visible", timeout=appear_ms)
             except Exception:  # noqa: BLE001
                 pass
-        for _ in range(2):
-            clicked = False
-            for selector in COOKIE_SELECTORS:
-                locator = self.page.locator(selector)
-                try:
-                    # The banner wait above is the only blocking probe. Trying
-                    # every fallback selector with its own timeout can add
-                    # several seconds whenever no banner is present.
-                    if await locator.first.is_visible(timeout=0):
-                        await locator.first.click(timeout=3000, force=True)
-                        clicked = True
-                        await self.page.wait_for_timeout(500)
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-            if not clicked:
-                return
-            try:
-                await self.page.locator("#onetrust-pc-sdk, #onetrust-banner-sdk").first.wait_for(
-                    state="hidden", timeout=2500
-                )
-                return
-            except Exception:  # noqa: BLE001
-                continue
+        # One JS pass instead of serial locator probes. On system Chrome each
+        # is_visible() is an Apple Event; 23 selectors were several seconds.
+        clicked = await self._click_cookie_banner()
+        if not clicked:
+            return
+        await self.page.wait_for_timeout(400)
+        await self._click_cookie_banner()
 
     async def _visible_text(self) -> str:
         try:
