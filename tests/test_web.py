@@ -28,8 +28,10 @@ def test_status_page_and_stop_when_idle(tmp_path: Path):
         assert page.status_code == 200
         assert "Container Tracker" in page.text
         assert ">Time<" in page.text
+        assert "Query time" in page.text
         status = client.get("/api/status")
         assert status.status_code == 200
+        assert status.json()["job"]["elapsed_ms"] is None
         assert status.json()["carriers"] == list(SUPPORTED_CARRIERS)
         assert status.json()["rows"][0]["container"] == "HLXU1234567"
         assert status.json()["carrier_times"] == {}
@@ -57,6 +59,8 @@ def test_start_and_stop_job(tmp_path: Path):
         begun = client.post("/api/start", json={"resume": False})
         assert begun.status_code == 200
         assert begun.json()["job"]["state"] == "running"
+        assert begun.json()["job"]["elapsed_ms"] is not None
+        assert begun.json()["job"]["elapsed_ms"] >= 0
         assert client.post("/api/start", json={}).status_code == 409
         assert client.post("/api/reload").status_code == 409
         for _ in range(50):

@@ -78,6 +78,21 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def job_elapsed_ms(
+    started_ms: int | None,
+    finished_ms: int | None,
+    *,
+    now_ms: int | None = None,
+) -> int | None:
+    """Wall-clock duration of the current or last job."""
+    if started_ms is None:
+        return None
+    end = finished_ms if finished_ms is not None else (
+        _now_ms() if now_ms is None else now_ms
+    )
+    return max(0, end - started_ms)
+
+
 def carrier_query_times(
     rows: list[dict],
     query_times: dict[int, dict[str, int]],
@@ -130,6 +145,8 @@ class JobManager:
         self.challenge: dict | None = None
         self.started_at: str | None = None
         self.finished_at: str | None = None
+        self.started_ms: int | None = None
+        self.finished_ms: int | None = None
         self.error: str | None = None
         self.message = ""
         self.output: str | None = relative_to_root(output_path) or str(output_path)
@@ -214,6 +231,8 @@ class JobManager:
         self.challenge = None
         self.started_at = _now()
         self.finished_at = None
+        self.started_ms = _now_ms()
+        self.finished_ms = None
         self.error = None
         self.message = "Starting job…"
         self.output = relative_to_root(self.output_path) or str(self.output_path)
@@ -345,6 +364,7 @@ class JobManager:
             self.challenge = None
             self.finished_at = _now()
             closed_at = _now_ms()
+            self.finished_ms = closed_at
             for timing in self.query_times.values():
                 timing.setdefault("finished_ms", closed_at)
             self.task = None
@@ -398,6 +418,7 @@ class JobManager:
                 "state": self.state,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
+                "elapsed_ms": job_elapsed_ms(self.started_ms, self.finished_ms),
                 "current_index": self.current_index,
                 "current_indices": sorted(self.active),
                 "challenge": self.challenge,

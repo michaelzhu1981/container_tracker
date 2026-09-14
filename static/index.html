@@ -68,10 +68,41 @@
     .panel {
       position: relative;
       z-index: 5;
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 20px;
       background: var(--paper);
       border: 1px solid var(--line);
       padding: 12px 14px;
       overflow: visible;
+    }
+    .panel-main { flex: 1; min-width: 0; }
+    .job-elapsed {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-end;
+      text-align: right;
+      min-width: 7.5rem;
+      padding: 2px 4px 2px 16px;
+      border-left: 1px solid var(--line);
+      flex-shrink: 0;
+      cursor: help;
+    }
+    .job-elapsed strong {
+      display: block;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.15;
+    }
+    .job-elapsed span {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
     .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; overflow: visible; }
     button {
@@ -257,18 +288,28 @@
   </header>
   <div class="wrap">
     <div class="panel">
-      <div class="controls">
-        <button id="startBtn" type="button">Start job</button>
-        <button id="stopBtn" class="danger" type="button" disabled>Stop job</button>
-        <button id="reloadBtn" class="secondary" type="button">Reload from Excel</button>
-        <label class="opt" data-tip="Reuse SAILED rows from the existing result file. Those boxes are not queried again."><input id="resume" type="checkbox"> Skip already SAILED</label>
-        <label class="opt" data-tip="If Cloudflare or CAPTCHA still blocks after automatic waits, pause so you can finish the check in Chrome. HLCU / CMDU / OOLU / ZIMU / HDMU open normal Google Chrome; keep that window open after the check. MAEU waits in the current window. After it clears, that carrier is queried in batch. Turn off to fail those rows and stop that carrier after two repeats."><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
-        <label class="opt" data-tip="Open a visible browser window for every carrier. Off keeps most sites headless; HLCU / MSCU / MAEU / CMDU / OOLU / ZIMU / HDMU still open Chrome because of bot checks."><input id="headed" type="checkbox"> Show browser</label>
-        <div id="optTip" class="opt-tip" hidden></div>
+      <div class="panel-main">
+        <div class="controls">
+          <button id="startBtn" type="button">Start job</button>
+          <button id="stopBtn" class="danger" type="button" disabled>Stop job</button>
+          <button id="reloadBtn" class="secondary" type="button">Reload from Excel</button>
+          <label class="opt" data-tip="Reuse SAILED rows from the existing result file. Those boxes are not queried again."><input id="resume" type="checkbox"> Skip already SAILED</label>
+          <label class="opt" data-tip="If Cloudflare or CAPTCHA still blocks after automatic waits, pause so you can finish the check in Chrome. HLCU / CMDU / OOLU / ZIMU / HDMU open normal Google Chrome; keep that window open after the check. MAEU waits in the current window. After it clears, that carrier is queried in batch. Turn off to fail those rows and stop that carrier after two repeats."><input id="waitChallenge" type="checkbox" checked> Wait for challenge</label>
+          <label class="opt" data-tip="Open a visible browser window for every carrier. Off keeps most sites headless; HLCU / MSCU / MAEU / CMDU / OOLU / ZIMU / HDMU still open Chrome because of bot checks."><input id="headed" type="checkbox"> Show browser</label>
+          <div id="optTip" class="opt-tip" hidden></div>
+        </div>
+        <div class="controls" style="margin-top:10px">
+          <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected queries every carrier. None selected queries none.">Carriers</span>
+          <div id="carrierChips" class="carriers"></div>
+        </div>
       </div>
-      <div class="controls" style="margin-top:10px">
-        <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected queries every carrier. None selected queries none.">Carriers</span>
-        <div id="carrierChips" class="carriers"></div>
+      <div
+        id="jobElapsed"
+        class="job-elapsed"
+        data-tip="Wall-clock time for this job, from start until now or until it finished."
+      >
+        <strong id="jobElapsedValue">—</strong>
+        <span>Query time</span>
       </div>
     </div>
     <div id="dash" class="dash" hidden>
@@ -373,6 +414,7 @@
     const pageSizeEl = document.getElementById("pageSize");
     const dashEl = document.getElementById("dash");
     const dashRowsEl = document.getElementById("dashRows");
+    const jobElapsedValueEl = document.getElementById("jobElapsedValue");
     let filter = "ALL";
     let carrierFilter = "";
     let chipsBeforeFocus = null;
@@ -573,6 +615,7 @@
       barEl.style.width = total ? `${Math.round((done / total) * 100)}%` : "0";
       messageEl.textContent = job.message || "";
       pathsEl.textContent = `Input ${job.input || "—"} · Output ${job.output || "—"} · ${done}/${total}`;
+      jobElapsedValueEl.textContent = formatDuration(job.elapsed_ms);
 
       if (data.carriers && data.carriers.length) {
         const incoming = [...data.carriers].sort((a, b) => a.localeCompare(b));

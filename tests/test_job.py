@@ -10,6 +10,7 @@ from job import (
     JobManager,
     JobStartError,
     carrier_query_times,
+    job_elapsed_ms,
 )
 from models import TrackResult
 
@@ -198,6 +199,28 @@ def test_job_snapshot_merges_previous_results(tmp_path: Path):
     assert row["status"] == "SAILED"
     assert row["phase"] == "done"
     assert manager.snapshot()["carrier_times"] == {}
+
+
+def test_job_elapsed_ms_from_start_until_now_or_finish():
+    assert job_elapsed_ms(None, None, now_ms=5_000) is None
+    assert job_elapsed_ms(1_000, None, now_ms=5_000) == 4_000
+    assert job_elapsed_ms(1_000, 3_000, now_ms=9_000) == 2_000
+    assert job_elapsed_ms(5_000, 4_000, now_ms=9_000) == 0
+
+
+def test_job_snapshot_exposes_elapsed_ms(tmp_path: Path, monkeypatch):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("HLXU1234567", "HLCU")])
+    clock = {"t": 1_000_000}
+    monkeypatch.setattr("job._now_ms", lambda: clock["t"])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    assert manager.snapshot()["job"]["elapsed_ms"] is None
+
+    manager.started_ms = 1_000_000
+    clock["t"] = 1_012_500
+    assert manager.snapshot()["job"]["elapsed_ms"] == 12_500
+    manager.finished_ms = 1_020_000
+    assert manager.snapshot()["job"]["elapsed_ms"] == 20_000
 
 
 def test_carrier_query_times_use_wall_clock_and_average():
