@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -142,7 +143,7 @@ async def test_search_clicks_back_on_result_page_without_reload():
             return None
 
         async def press_sequentially(self, value, delay=0):
-            raise AssertionError("sequential typing is not needed for the YMJA field")
+            fills.append(value)
 
     class Page:
         url = "https://www.yangming.com/en/esolution/tracking/cargo_tracking"
@@ -164,6 +165,10 @@ async def test_search_clicks_back_on_result_page_without_reload():
 
         async def evaluate(self, script, arg=None):
             return False
+
+        @asynccontextmanager
+        async def expect_response(self, predicate, timeout=0):
+            yield
 
     await YangMingTracker(Page()).search("BEAU4332016")
     assert not gotos
@@ -203,7 +208,7 @@ async def test_search_uses_visible_field_without_back_or_reload():
             return None
 
         async def press_sequentially(self, value, delay=0):
-            raise AssertionError("sequential typing is not needed for the YMJA field")
+            return None
 
     class Page:
         def locator(self, selector):
@@ -223,6 +228,10 @@ async def test_search_uses_visible_field_without_back_or_reload():
 
         async def evaluate(self, script, arg=None):
             return False
+
+        @asynccontextmanager
+        async def expect_response(self, predicate, timeout=0):
+            yield
 
     await YangMingTracker(Page()).search("YMMU6654691")
     assert not gotos

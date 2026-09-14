@@ -183,20 +183,23 @@ class YangMingTracker(BaseTracker):
         field = await self._ensure_search_field()
         await field.click()
         await field.fill("")
-        await field.fill(container)
+        # React Aria ignores fill(); key events are what update the search state.
+        await field.press_sequentially(container, delay=30)
         search = self.page.locator(SEARCH_BUTTON_SELECTOR)
-        clicked = False
+        submitted = False
         try:
-            if await search.last.is_visible(timeout=800):
-                await search.last.click(timeout=8_000)
-                clicked = True
+            async with self.page.expect_response(
+                lambda response: "CargoTracking/GetTracking" in response.url,
+                timeout=30_000,
+            ):
+                await search.last.click()
+                submitted = True
         except Exception:  # noqa: BLE001
-            clicked = False
-        if not clicked:
-            try:
-                await search.last.click(force=True)
-            except Exception:  # noqa: BLE001
-                await field.press("Enter")
+            if not submitted:
+                try:
+                    await search.last.click(force=True)
+                except Exception:  # noqa: BLE001
+                    await field.press("Enter")
         await self._wait_for_results(container)
 
     async def _wait_for_results(self, container: str = "") -> None:
@@ -207,7 +210,6 @@ class YangMingTracker(BaseTracker):
                     const needle = NEEDLE;
                     const text = (document.body && document.body.innerText) || "";
                     const low = text.toLowerCase();
-                    if ((DETECT_CHALLENGE)()) return true;
                     if (
                         low.includes("can't identify") ||
                         low.includes("cannot identify") ||
@@ -217,7 +219,9 @@ class YangMingTracker(BaseTracker):
                         return true;
                     }
                     const table = document.querySelector("table[aria-label*='ontainer' i]");
-                    if (!table) return false;
+                    if (!table) {
+                        return (DETECT_CHALLENGE)();
+                    }
                     if (!needle) return true;
                     return [...document.querySelectorAll(
                         "[role='tab'], table[aria-label*='ontainer' i]"
