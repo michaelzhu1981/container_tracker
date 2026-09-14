@@ -21,6 +21,13 @@ from trackers.base import BaseTracker, TrackerError
 
 TRACK_URL = "https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking"
 _TOTAL_RESULT_RE = re.compile(r"total\s+(\d+)\s+result", re.I)
+SEARCH_FIELD_SELECTOR = (
+    "input[data-testid='tnt-search-multiple-input'], "
+    "input[class*='SearchMultiple_input'], "
+    "input[placeholder*='Container' i], "
+    "input[placeholder*='Search by' i]"
+)
+CHIP_CLEAR_SELECTOR = "[data-testid='tnt-search-multiple-input-chip-clear']"
 
 ONE_RESULT_STATE_JS = """() => {
     const text = (document.body && document.body.innerText) || "";
@@ -394,6 +401,22 @@ class OneTracker(BaseTracker):
             except Exception:  # noqa: BLE001
                 pass
 
+    async def _first_visible_search_field(self, timeout_ms: int = 4_000):
+        field = self.page.locator(SEARCH_FIELD_SELECTOR)
+        await field.first.wait_for(state="visible", timeout=timeout_ms)
+        return field.first
+
+    async def _clear_search_chips(self) -> None:
+        clear = self.page.locator(CHIP_CLEAR_SELECTOR)
+        for _ in range(8):
+            try:
+                if not await clear.first.is_visible(timeout=0):
+                    return
+                await clear.first.click(timeout=2_000)
+                await self.page.wait_for_timeout(80)
+            except Exception:  # noqa: BLE001
+                return
+
     async def open_page(self) -> None:
         if not await self.open_tracking_or_reuse("one-line.com"):
             return
@@ -404,28 +427,23 @@ class OneTracker(BaseTracker):
         await self.dismiss_cookies(wait_ms=0)
         await self.dismiss_onboarding()
         await self._select_container_search()
-        field = self.page.locator(
-            "input[placeholder*='Container' i], input[placeholder*='Search by' i]"
-        )
         try:
-            await field.first.wait_for(state="visible", timeout=12_000)
-        except Exception as exc:  # noqa: BLE001
+            field = await self._first_visible_search_field()
+        except Exception:  # noqa: BLE001
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
             await self.dismiss_onboarding()
             await self._select_container_search()
-            field = self.page.locator(
-                "input[placeholder*='Container' i], input[placeholder*='Search by' i]"
-            )
             try:
-                await field.first.wait_for(state="visible", timeout=12_000)
+                field = await self._first_visible_search_field()
             except Exception as retry_exc:  # noqa: BLE001
                 raise TrackerError(
                     "Could not find the container search field.", "SELECTOR"
                 ) from retry_exc
-        await field.first.click()
-        await field.first.fill("")
-        await field.first.press_sequentially(container, delay=30)
+        await self._clear_search_chips()
+        await field.click()
+        await field.fill("")
+        await field.fill(container)
         search = self.page.locator("button[class*='ContainerListFilters_button-search']")
         clicked = False
         try:
@@ -435,10 +453,10 @@ class OneTracker(BaseTracker):
         except Exception:  # noqa: BLE001
             clicked = False
         if not clicked:
-            await field.first.press("Enter")
-        await self._wait_for_results()
+            await field.press("Enter")
+        await self._wait_for_results(container)
         if (
-            not await self._has_tracking_result()
+            not await self._has_tracking_result(container)
             and not await self._page_challenge_code()
         ):
             await self.page.goto(
@@ -447,30 +465,63 @@ class OneTracker(BaseTracker):
             )
             await self.dismiss_cookies(wait_ms=0)
             await self.dismiss_onboarding()
-            await self._wait_for_results()
+            await self._wait_for_results(container)
 
-    async def _has_tracking_result(self) -> bool:
+    async def _result_shows_container(self, container: str) -> bool:
+        try:
+            return await self.page.evaluate(
+                """(needle) => {
+                    const n = String(needle || "").toLowerCase();
+                    if (!n) return false;
+                    return [...document.querySelectorAll(
+                        "[class*='TextUnderLine'], [class*='CargoTrackingDetail']"
+                    )].some((el) => (el.innerText || "").toLowerCase().includes(n));
+                }""",
+                container.lower(),
+            ) is True
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _has_tracking_result(self, container: str = "") -> bool:
         try:
             state = await self.page.evaluate(ONE_RESULT_STATE_JS)
         except Exception:  # noqa: BLE001
             return False
         if isinstance(state, dict):
-            return one_has_result(state)
-        return bool(state)
+            if not one_has_result(state):
+                return False
+        elif not state:
+            return False
+        if container:
+            return await self._result_shows_container(container)
+        return True
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, container: str = "") -> None:
+        needle = json.dumps(container.lower())
         try:
             await self.page.wait_for_function(
                 """() => {
+                    const needle = NEEDLE;
                     const text = (document.body && document.body.innerText) || "";
                     const low = text.toLowerCase();
-                    if (/in progress/.test(low)) return false;
-                    if (document.querySelector("table[class*='EventTable']")) return true;
-                    if (document.querySelector("[class*='CargoTrackingDetail']")) return true;
-                    if (/total\\s+\\d+\\s+result/.test(low)) return true;
-                    if (low.includes("没有查询结果") || low.includes("查无")) return true;
-                    return (DETECT_CHALLENGE)();
-                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                    if ((DETECT_CHALLENGE)()) return true;
+                    if (
+                        /total\\s+0\\s+result/.test(low) ||
+                        low.includes("没有查询结果") ||
+                        low.includes("查无")
+                    ) {
+                        return true;
+                    }
+                    const hasTable = !!document.querySelector("table[class*='EventTable']");
+                    const hasDetail = !!document.querySelector("[class*='CargoTrackingDetail']");
+                    if (!hasTable && !hasDetail) return false;
+                    if (!needle) return true;
+                    return [...document.querySelectorAll(
+                        "[class*='TextUnderLine'], [class*='CargoTrackingDetail']"
+                    )].some((el) => (el.innerText || "").toLowerCase().includes(needle));
+                }""".replace("NEEDLE", needle).replace(
+                    "DETECT_CHALLENGE", CHALLENGE_CODE_JS
+                ),
                 timeout=20_000,
             )
         except Exception:  # noqa: BLE001

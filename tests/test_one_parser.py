@@ -5,6 +5,8 @@ import pytest
 from status_engine import evaluate
 from trackers.base import TrackerError
 from trackers.one import (
+    CHIP_CLEAR_SELECTOR,
+    SEARCH_FIELD_SELECTOR,
     OneTracker,
     one_has_result,
     one_search_settled,
@@ -144,3 +146,113 @@ async def test_has_tracking_result_rejects_total_zero():
             }
 
     assert await OneTracker(Page())._has_tracking_result() is False
+
+
+def test_search_field_selector_uses_stable_testid():
+    assert "tnt-search-multiple-input" in SEARCH_FIELD_SELECTOR
+    assert "SearchMultiple_input" in SEARCH_FIELD_SELECTOR
+    assert "tnt-search-multiple-input-chip-clear" in CHIP_CLEAR_SELECTOR
+
+
+@pytest.mark.asyncio
+async def test_wait_for_results_requires_this_container_headline():
+    seen: list[str] = []
+
+    class Page:
+        async def wait_for_function(self, script, timeout=0, polling=None):
+            seen.append(script)
+            return True
+
+    await OneTracker(Page())._wait_for_results("ONEU1234567")
+    assert seen
+    script = seen[0]
+    assert "oneu1234567" in script
+    assert "TextUnderLine" in script
+    assert "if (/in progress/.test(low)) return false" not in script
+
+
+@pytest.mark.asyncio
+async def test_search_reuses_testid_field_and_clears_chip_without_reload():
+    waits: list[tuple[str, int]] = []
+    clicks: list[str] = []
+    fills: list[str] = []
+    gotos: list[str] = []
+    chip_visible = {"n": 1}
+
+    class Loc:
+        def __init__(self, selector: str) -> None:
+            self.selector = selector
+            self.first = self
+
+        async def wait_for(self, state="visible", timeout=0):
+            waits.append((self.selector, timeout))
+            if "tnt-search-multiple-input" in self.selector:
+                return None
+            raise TimeoutError(self.selector)
+
+        async def is_visible(self, timeout=0):
+            if "Skip" in self.selector:
+                return False
+            if "SearchContainer_select-title" in self.selector:
+                return True
+            if "chip-clear" in self.selector:
+                if chip_visible["n"]:
+                    chip_visible["n"] -= 1
+                    return True
+                return False
+            if "button-search" in self.selector:
+                return True
+            return False
+
+        async def click(self, timeout=0, force=False):
+            clicks.append(self.selector)
+
+        async def fill(self, value, force=False):
+            fills.append(value)
+
+        async def press(self, key):
+            return None
+
+        async def inner_text(self):
+            return "Container No."
+
+        async def press_sequentially(self, value, delay=0):
+            raise AssertionError("sequential typing is not needed for the ONE field")
+
+    class Page:
+        url = "https://www.one-line.com/one-ecom/manage-shipment/cargo-tracking"
+
+        def locator(self, selector):
+            return Loc(selector)
+
+        def get_by_role(self, role, name=None):
+            return Loc(f"role:{role}:{name}")
+
+        async def goto(self, url, wait_until=None):
+            gotos.append(url)
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        async def wait_for_function(self, script, timeout=0, polling=None):
+            return True
+
+        async def evaluate(self, script, arg=None):
+            if arg:
+                return True
+            if "EventTable" in script:
+                return {
+                    "text": "ONEU1234567 Total 1 result",
+                    "hasTable": True,
+                    "hasDetail": True,
+                    "loading": False,
+                }
+            return False
+
+    await OneTracker(Page()).search("ONEU1234567")
+    assert not gotos
+    assert any("tnt-search-multiple-input" in selector for selector, _timeout in waits)
+    assert all(timeout != 12_000 for _selector, timeout in waits)
+    assert any("chip-clear" in selector for selector in clicks)
+    assert fills[-1] == "ONEU1234567"
+    assert any("button-search" in selector for selector in clicks)
