@@ -310,7 +310,7 @@
           <div id="optTip" class="opt-tip" hidden></div>
         </div>
         <div class="controls" style="margin-top:10px">
-          <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here. All selected queries every carrier. None selected queries none.">Carriers</span>
+          <span class="sub has-tip" data-tip="Start job queries only the colored carriers. Click a chip to include or exclude it. A summary row colors that carrier here and Start job then queries only that carrier. Click the row again to restore these chips. All selected queries every carrier. None selected queries none.">Carriers</span>
           <div id="carrierChips" class="carriers"></div>
         </div>
       </div>
@@ -324,7 +324,7 @@
       </div>
     </div>
     <div id="dash" class="dash" hidden>
-      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to show only that carrier's boxes below and color that carrier above; click again to clear.">Summary by carrier</div>
+      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to show only that carrier's boxes below, color that carrier above, and have Start job query only that carrier. Click again to show every carrier and restore the chips.">Summary by carrier</div>
       <table>
         <thead>
           <tr>
@@ -457,8 +457,14 @@
       return [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
     }
 
+    function jobChipCodes() {
+      if (carrierFilter) return [carrierFilter];
+      if (chipsBeforeFocus != null) return chipsBeforeFocus;
+      return chipOnCodes();
+    }
+
     function selectedCarriers() {
-      const on = chipOnCodes();
+      const on = jobChipCodes();
       if (!on.length) return [];
       if (on.length === knownCarriers.length) return null;
       return on;
@@ -654,18 +660,16 @@
           incoming.length === knownCarriers.length &&
           incoming.every((code, index) => code === knownCarriers[index]);
         if (!unchanged) {
-          const prevOn = [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
+          const prevOn = chipsBeforeFocus != null
+            ? chipsBeforeFocus
+            : [...chipsEl.querySelectorAll(".chip.on")].map((el) => el.dataset.carrier);
           const keepSelection =
             chipsEl.childElementCount > 0 &&
             prevOn.length > 0 &&
             prevOn.length < knownCarriers.length;
           knownCarriers = incoming;
           renderChips(incoming, keepSelection);
-          if (carrierFilter) {
-            chipsEl.querySelectorAll(".chip").forEach((el) => {
-              el.classList.toggle("on", el.dataset.carrier === carrierFilter);
-            });
-          }
+          syncChipColors();
         }
       }
 
@@ -793,11 +797,29 @@
       try { render(await api("/api/reload", { method: "POST", body: "{}" })); }
       catch (err) { messageEl.textContent = String(err.message || err); }
     });
-    dashRowsEl.addEventListener("click", (event) => {
+    dashRowsEl.addEventListener("click", async (event) => {
       const row = event.target.closest("[data-carrier]");
       if (!row) return;
-      carrierFilter = carrierFilter === row.dataset.carrier ? "" : row.dataset.carrier;
+      const selected = carrierFilter === row.dataset.carrier;
+      carrierFilter = selected ? "" : row.dataset.carrier;
+      if (selected) filter = "ALL";
+      const jobChips = chipsBeforeFocus != null ? chipsBeforeFocus : chipOnCodes();
       syncChipColors();
+      if (selected) {
+        const visible = new Set(
+          [...dashRowsEl.querySelectorAll("tr")].map((tr) => tr.dataset.carrier)
+        );
+        const missing = jobChips.some((code) => !visible.has(code));
+        const idle = !["running", "stopping"].includes(stateEl.textContent);
+        if (missing && idle) {
+          try {
+            render(await api("/api/reload", { method: "POST", body: "{}" }));
+            return;
+          } catch (err) {
+            messageEl.textContent = String(err.message || err);
+          }
+        }
+      }
       refresh();
     });
     dashEl.addEventListener("click", (event) => {
@@ -834,10 +856,16 @@
     chipsEl.addEventListener("click", (event) => {
       const chip = event.target.closest(".chip");
       if (!chip) return;
+      if (chipsBeforeFocus != null) {
+        const restore = new Set(chipsBeforeFocus);
+        chipsEl.querySelectorAll(".chip").forEach((el) => {
+          el.classList.toggle("on", restore.has(el.dataset.carrier));
+        });
+        chipsBeforeFocus = null;
+        carrierFilter = "";
+        filter = "ALL";
+      }
       chip.classList.toggle("on");
-      chipsBeforeFocus = null;
-      const on = chipOnCodes();
-      carrierFilter = on.length === 1 ? on[0] : "";
       refresh();
     });
 

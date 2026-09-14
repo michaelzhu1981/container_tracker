@@ -194,6 +194,7 @@ class JobManager:
         if self.state in {"running", "stopping"}:
             raise JobBusyError("A job is already running.")
         rows = order_rows_by_carrier(read_input(self.input_path))
+        allow: set[str] | None = None
         if carriers is not None:
             allow = {code.strip().upper() for code in carriers if code.strip()}
             unknown = sorted(allow - set(SUPPORTED_CARRIERS))
@@ -201,7 +202,8 @@ class JobManager:
                 raise JobStartError(f"Unsupported carrier code: {', '.join(unknown)}.")
             if not allow:
                 raise JobStartError("No carrier selected.")
-            rows = [row for row in rows if row["Carrier"] in allow]
+            if not any(row["Carrier"] in allow for row in rows):
+                raise JobStartError("No container rows to track.")
         if limit is not None:
             if limit < 1:
                 raise JobStartError("Limit must be at least 1.")
@@ -211,18 +213,23 @@ class JobManager:
 
         self.rows = rows
         self.results = [None] * len(rows)
-        if resume:
-            previous = load_previous_results(self.output_path)
-            occurrence: dict[tuple[str, str], int] = {}
-            for idx, row in enumerate(rows):
-                key = (row["Container"], row["Carrier"])
-                seen = occurrence.get(key, 0)
-                occurrence[key] = seen + 1
-                cells = previous.get((row["Container"], row["Carrier"], seen))
-                if cells and cells.get("Status") == "SAILED":
+        previous = load_previous_results(self.output_path)
+        occurrence: dict[tuple[str, str], int] = {}
+        for idx, row in enumerate(rows):
+            key = (row["Container"], row["Carrier"])
+            seen = occurrence.get(key, 0)
+            occurrence[key] = seen + 1
+            cells = previous.get((row["Container"], row["Carrier"], seen))
+            skipped = allow is not None and row["Carrier"] not in allow
+            if skipped:
+                if cells and cells.get("Status"):
                     self.results[idx] = cells_to_result(
                         row["Container"], row["Carrier"], cells
                     )
+            elif resume and cells and cells.get("Status") == "SAILED":
+                self.results[idx] = cells_to_result(
+                    row["Container"], row["Carrier"], cells
+                )
         self.state = "running"
         self.active = {}
         self.query_times = {}
@@ -342,6 +349,7 @@ class JobManager:
                 cancel_event=self.cancel_event,
                 on_progress=self._on_progress,
                 allow_stdin=False,
+                carriers=self.options["carriers"],
             )
             self.output = relative_to_root(written) or str(written)
         except Exception as exc:  # noqa: BLE001

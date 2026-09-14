@@ -521,6 +521,48 @@ async def test_carrier_worker_initializes_once_and_queries_serially(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_skips_carriers_outside_filter(tmp_path: Path, monkeypatch):
+    from models import TrackResult
+    from runner import run_batch
+
+    tracked: list[str] = []
+
+    async def fake_track(page, carrier, container, **kwargs):
+        tracked.append(carrier)
+        return TrackResult(
+            container=container,
+            carrier=carrier,
+            status="NOT_LOADED",
+            success=True,
+            check_result="SUCCESS",
+            checked_at="t",
+        )
+
+    async def no_delay(seconds, cancel_event):
+        return False
+
+    async def no_prepare(_self):
+        return None
+
+    _fake_playwright_browser(monkeypatch)
+    monkeypatch.setattr("trackers.base.BaseTracker.prepare_session", no_prepare)
+    monkeypatch.setattr("runner._track_one", fake_track)
+    monkeypatch.setattr("runner.sleep_or_cancel", no_delay)
+    rows = [
+        {"Container": "HLXU1234567", "Carrier": "HLCU", "extras": {}},
+        {"Container": "YMLU1234567", "Carrier": "YMJA", "extras": {}},
+    ]
+    results, _written = await run_batch(
+        rows,
+        output_path=tmp_path / "out.xlsx",
+        wait_for_challenge=False,
+        carriers=["HLCU"],
+    )
+    assert tracked == ["HLCU"]
+    assert [item.carrier for item in results] == ["HLCU"]
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_writer_batches_and_flushes_on_close(
     tmp_path: Path, monkeypatch
 ):

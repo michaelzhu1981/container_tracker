@@ -79,6 +79,37 @@ def test_job_start_rejects_empty(tmp_path: Path):
         manager.request_stop()
 
 
+@pytest.mark.asyncio
+async def test_job_start_keeps_all_carriers_on_the_board(tmp_path: Path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("HLXU1234567", "HLCU"), ("YMLU1234567", "YMJA")])
+    started = asyncio.Event()
+    captured: dict = {}
+
+    async def fake_run_batch(rows, **kwargs):
+        captured["rows"] = [row["Carrier"] for row in rows]
+        captured["carriers"] = kwargs.get("carriers")
+        started.set()
+        await kwargs["cancel_event"].wait()
+        return [], kwargs["output_path"]
+
+    manager = JobManager(
+        run_batch_fn=fake_run_batch,
+        input_path=source,
+        output_path=tmp_path / "out.xlsx",
+    )
+    manager.start(carriers=["HLCU"])
+    await asyncio.wait_for(started.wait(), timeout=2)
+    snap = manager.snapshot()
+    assert [row["carrier"] for row in snap["rows"]] == ["HLCU", "YMJA"]
+    assert snap["job"]["total"] == 2
+    assert captured["rows"] == ["HLCU", "YMJA"]
+    assert captured["carriers"] == ["HLCU"]
+    manager.request_stop()
+    if manager.task is not None:
+        await manager.task
+
+
 def test_job_start_rejects_empty_carrier_filter(tmp_path: Path):
     source = tmp_path / "in.xlsx"
     _write_input(source, [("HLXU1234567", "HLCU")])

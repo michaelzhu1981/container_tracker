@@ -724,6 +724,7 @@ async def run_batch(
     cancel_event: asyncio.Event | None = None,
     on_progress: Callable[[dict], None] | None = None,
     allow_stdin: bool = True,
+    carriers: list[str] | set[str] | None = None,
 ) -> tuple[list[TrackResult], Path]:
     from artifacts import checked_at
     from playwright.async_api import async_playwright
@@ -732,19 +733,33 @@ async def run_batch(
         if on_progress:
             on_progress(payload)
 
-    previous = load_previous_results(previous_path or output_path) if resume else {}
+    allow = None
+    if carriers is not None:
+        allow = {str(code).strip().upper() for code in carriers if str(code).strip()}
+    previous = (
+        load_previous_results(previous_path or output_path)
+        if resume or allow is not None
+        else {}
+    )
     results: list[TrackResult | None] = [None] * len(rows)
     occurrence: dict[tuple[str, str], int] = {}
     total = len(rows)
 
     skip_indices: set[int] = set()
-    if resume:
+    if resume or allow is not None:
         for idx, row in enumerate(rows):
             key = (row["Container"], row["Carrier"])
             seen = occurrence.get(key, 0)
             occurrence[key] = seen + 1
             cells = previous.get((row["Container"], row["Carrier"], seen))
-            if cells and cells.get("Status") == "SAILED":
+            skipped_carrier = allow is not None and row["Carrier"] not in allow
+            if skipped_carrier:
+                if cells and cells.get("Status"):
+                    results[idx] = cells_to_result(
+                        row["Container"], row["Carrier"], cells
+                    )
+                skip_indices.add(idx)
+            elif resume and cells and cells.get("Status") == "SAILED":
                 results[idx] = cells_to_result(row["Container"], row["Carrier"], cells)
                 skip_indices.add(idx)
 

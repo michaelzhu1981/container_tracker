@@ -75,6 +75,30 @@ def test_start_and_stop_job(tmp_path: Path):
         assert client.get("/api/status").json()["job"]["state"] == "stopped"
 
 
+def test_start_with_carrier_filter_keeps_other_carriers_on_board(tmp_path: Path):
+    source = tmp_path / "in.xlsx"
+    _write_input(
+        source,
+        [("HLXU1234567", "HLCU"), ("YMLU1234567", "YMJA")],
+    )
+
+    async def fake_run_batch(rows, **kwargs):
+        await kwargs["cancel_event"].wait()
+        return [], kwargs["output_path"]
+
+    manager = JobManager(
+        run_batch_fn=fake_run_batch,
+        input_path=source,
+        output_path=tmp_path / "out.xlsx",
+    )
+    with TestClient(create_app(manager)) as client:
+        begun = client.post("/api/start", json={"carriers": ["HLCU"]})
+        assert begun.status_code == 200
+        assert {row["carrier"] for row in begun.json()["rows"]} == {"HLCU", "YMJA"}
+        assert begun.json()["job"]["total"] == 2
+        assert client.post("/api/stop").status_code == 200
+
+
 def test_status_exposes_multiple_parallel_queries(tmp_path: Path):
     source = tmp_path / "in.xlsx"
     _write_input(
