@@ -148,6 +148,20 @@ async def test_has_tracking_result_rejects_total_zero():
     assert await OneTracker(Page())._has_tracking_result() is False
 
 
+@pytest.mark.asyncio
+async def test_has_tracking_result_rejects_in_progress_overlay():
+    class Page:
+        async def evaluate(self, script):
+            return {
+                "text": "In progress...\nTotal 0 results",
+                "hasTable": False,
+                "hasDetail": False,
+                "loading": True,
+            }
+
+    assert await OneTracker(Page())._has_tracking_result("ONEU1234567") is False
+
+
 def test_search_field_selector_uses_stable_testid():
     assert "tnt-search-multiple-input" in SEARCH_FIELD_SELECTOR
     assert "SearchMultiple_input" in SEARCH_FIELD_SELECTOR
@@ -168,7 +182,9 @@ async def test_wait_for_results_requires_this_container_headline():
     script = seen[0]
     assert "oneu1234567" in script
     assert "TextUnderLine" in script
-    assert "if (/in progress/.test(low)) return false" not in script
+    assert "SpinnerV2" in script
+    assert "/in progress/i.test(low)" in script
+    assert "EventTable_table-row" in script
 
 
 @pytest.mark.asyncio

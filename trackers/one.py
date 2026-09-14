@@ -33,9 +33,10 @@ ONE_RESULT_STATE_JS = """() => {
     const text = (document.body && document.body.innerText) || "";
     return {
         text,
-        hasTable: !!document.querySelector("table[class*='EventTable']"),
+        hasTable: !!document.querySelector("[class*='EventTable_table-row']"),
         hasDetail: !!document.querySelector("[class*='CargoTrackingDetail']"),
-        loading: /in progress/i.test(text),
+        loading: !!document.querySelector("[class*='SpinnerV2']") ||
+            /in progress/i.test(text),
     };
 }"""
 
@@ -488,6 +489,8 @@ class OneTracker(BaseTracker):
         except Exception:  # noqa: BLE001
             return False
         if isinstance(state, dict):
+            if state.get("loading"):
+                return False
             if not one_has_result(state):
                 return False
         elif not state:
@@ -506,15 +509,21 @@ class OneTracker(BaseTracker):
                     const low = text.toLowerCase();
                     if ((DETECT_CHALLENGE)()) return true;
                     if (
+                        document.querySelector("[class*='SpinnerV2']") ||
+                        /in progress/i.test(low)
+                    ) {
+                        return false;
+                    }
+                    if (
                         /total\\s+0\\s+result/.test(low) ||
                         low.includes("没有查询结果") ||
                         low.includes("查无")
                     ) {
                         return true;
                     }
-                    const hasTable = !!document.querySelector("table[class*='EventTable']");
+                    const hasRows = !!document.querySelector("[class*='EventTable_table-row']");
                     const hasDetail = !!document.querySelector("[class*='CargoTrackingDetail']");
-                    if (!hasTable && !hasDetail) return false;
+                    if (!hasRows && !hasDetail) return false;
                     if (!needle) return true;
                     return [...document.querySelectorAll(
                         "[class*='TextUnderLine'], [class*='CargoTrackingDetail']"
