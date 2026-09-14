@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from event_text import (
@@ -18,6 +19,8 @@ from challenges import CHALLENGE_CODE_JS
 from trackers.base import BaseTracker, TrackerError
 
 TRACK_URL = "https://www.yangming.com/en/esolution/tracking/cargo_tracking"
+BACK_BUTTON_SELECTOR = "button:has-text('Back'), button:has-text('返回')"
+SEARCH_BUTTON_SELECTOR = "button:has-text('Search'), button:has-text('查询')"
 
 _HEADER_HINTS = {
     "date": ("date/time", "date", "time"),
@@ -141,68 +144,102 @@ class YangMingTracker(BaseTracker):
             return
         await self.dismiss_cookies(wait_ms=20_000)
 
+    async def _first_visible_search_field(self, timeout_ms: int = 4_000):
+        field = self.page.get_by_role("textbox")
+        await field.first.wait_for(state="visible", timeout=timeout_ms)
+        return field.first
+
+    async def _click_back_to_form(self) -> None:
+        back = self.page.locator(BACK_BUTTON_SELECTOR)
+        try:
+            if not await back.first.is_visible(timeout=0):
+                return
+            await back.first.click(timeout=3_000)
+            await self.page.wait_for_timeout(120)
+        except Exception:  # noqa: BLE001
+            return
+
+    async def _ensure_search_field(self):
+        try:
+            return await self._first_visible_search_field(timeout_ms=400)
+        except Exception:  # noqa: BLE001
+            pass
+        await self._click_back_to_form()
+        try:
+            return await self._first_visible_search_field()
+        except Exception:  # noqa: BLE001
+            pass
+        await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
+        await self.dismiss_cookies(wait_ms=0)
+        try:
+            return await self._first_visible_search_field()
+        except Exception as retry_exc:  # noqa: BLE001
+            raise TrackerError(
+                "Could not find the container search field.", "SELECTOR"
+            ) from retry_exc
+
     async def search(self, container: str) -> None:
         await self.dismiss_cookies(wait_ms=0)
-        field = self.page.get_by_role("textbox").first
-        try:
-            await field.wait_for(state="visible", timeout=10_000)
-        except Exception as exc:  # noqa: BLE001
-            await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
-            await self.dismiss_cookies(wait_ms=0)
-            field = self.page.get_by_role("textbox").first
-            try:
-                await field.wait_for(state="visible", timeout=10_000)
-            except Exception as retry_exc:  # noqa: BLE001
-                raise TrackerError(
-                    "Could not find the container search field.", "SELECTOR"
-                ) from retry_exc
+        field = await self._ensure_search_field()
         await field.click()
         await field.fill("")
-        await field.press_sequentially(container, delay=40)
-        search = self.page.locator("button:has-text('Search')")
-        submitted = False
+        await field.fill(container)
+        search = self.page.locator(SEARCH_BUTTON_SELECTOR)
+        clicked = False
         try:
-            async with self.page.expect_response(
-                lambda response: "CargoTracking/GetTracking" in response.url,
-                timeout=30_000,
-            ):
-                await search.last.click()
-                submitted = True
+            if await search.last.is_visible(timeout=800):
+                await search.last.click(timeout=8_000)
+                clicked = True
         except Exception:  # noqa: BLE001
-            if not submitted:
-                try:
-                    await search.last.click(force=True)
-                except Exception:  # noqa: BLE001
-                    await field.press("Enter")
+            clicked = False
+        if not clicked:
+            try:
+                await search.last.click(force=True)
+            except Exception:  # noqa: BLE001
+                await field.press("Enter")
+        await self._wait_for_results(container)
+
+    async def _wait_for_results(self, container: str = "") -> None:
+        needle = json.dumps(container.lower())
         try:
             await self.page.wait_for_function(
                 """() => {
-                    if (document.querySelector("table[aria-label*='ontainer' i]")) return true;
-                    if (document.querySelector("table tbody tr")) return true;
-                    const text = (document.body && document.body.innerText || "").toLowerCase();
-                    return (
-                        text.includes("can't identify") ||
-                        text.includes("cannot identify") ||
-                        text.includes("无法识别") ||
-                        text.includes("查无") ||
-                        (DETECT_CHALLENGE)()
-                    );
-                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
-                timeout=8_000 if submitted else 20_000,
+                    const needle = NEEDLE;
+                    const text = (document.body && document.body.innerText) || "";
+                    const low = text.toLowerCase();
+                    if ((DETECT_CHALLENGE)()) return true;
+                    if (
+                        low.includes("can't identify") ||
+                        low.includes("cannot identify") ||
+                        low.includes("无法识别") ||
+                        low.includes("查无")
+                    ) {
+                        return true;
+                    }
+                    const table = document.querySelector("table[aria-label*='ontainer' i]");
+                    if (!table) return false;
+                    if (!needle) return true;
+                    return [...document.querySelectorAll(
+                        "[role='tab'], table[aria-label*='ontainer' i]"
+                    )].some((el) => (el.innerText || "").toLowerCase().includes(needle));
+                }""".replace("NEEDLE", needle).replace(
+                    "DETECT_CHALLENGE", CHALLENGE_CODE_JS
+                ),
+                timeout=20_000,
             )
         except Exception:  # noqa: BLE001
             pass
 
     async def parse_events(self) -> list[CanonicalEvent]:
         html = await self.page.content()
+        events = parse_yangming_html(html)
+        if events:
+            return events
         blob = html.lower()
         try:
             blob = blob + "\n" + (await self.page.inner_text("body")).lower()
         except Exception:  # noqa: BLE001
             pass
-        events = parse_yangming_html(html)
-        if events:
-            return events
         if "can't identify" in blob or "cannot identify" in blob or "can’t identify" in blob:
             raise TrackerError("No tracking result for this container.", "NO_RESULT")
         raise TrackerError("Tracking table was not found or could not be parsed.", "PARSE")
