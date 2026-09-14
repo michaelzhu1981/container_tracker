@@ -269,9 +269,20 @@
     .dash tbody tr { cursor: pointer; }
     .dash tbody tr.active td { background: var(--accent-soft); }
     .dash .zero { color: var(--muted); }
-    .dash .pct-row { display: inline-flex; align-items: center; gap: 8px; }
-    .dash .pct { min-width: 3ch; color: var(--muted); }
-    .dash .mini { display: block; height: 3px; width: 72px; background: var(--line); }
+    .dash .pct-row { display: flex; align-items: center; gap: 8px; }
+    .dash .pct {
+      flex: 0 0 4.5ch;
+      width: 4.5ch;
+      text-align: right;
+      color: var(--muted);
+    }
+    .dash .mini {
+      display: block;
+      flex: 0 0 72px;
+      height: 3px;
+      width: 72px;
+      background: var(--line);
+    }
     .dash .mini > i { display: block; height: 100%; background: var(--accent); }
     .dash th.time, .dash td.time { text-align: right; }
     .dash .elapsed { display: block; }
