@@ -324,7 +324,7 @@
       </div>
     </div>
     <div id="dash" class="dash" hidden>
-      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to color that carrier above; click again to clear.">Summary by carrier</div>
+      <div class="dash-head has-tip" data-tip="Per-carrier query totals for the current input. Time is this job's wall-clock total and average per queried box. Click a row to show only that carrier's boxes below and color that carrier above; click again to clear.">Summary by carrier</div>
       <table>
         <thead>
           <tr>
@@ -576,6 +576,26 @@
       });
     }
 
+    function rowCountKey(row) {
+      if (["querying", "challenge"].includes(row.phase)) return "QUERYING";
+      if (row.phase === "pending") return "PENDING";
+      return row.status;
+    }
+
+    function matchesStatusFilter(row) {
+      if (filter === "ALL") return true;
+      return rowCountKey(row) === filter;
+    }
+
+    function countRows(rows) {
+      const counts = Object.fromEntries(COUNT_KEYS.map(([key]) => [key, 0]));
+      for (const row of rows) {
+        const key = rowCountKey(row);
+        if (key in counts) counts[key] += 1;
+      }
+      return counts;
+    }
+
     function renderDash(rows, order, times) {
       const items = sortCarrierSummary(carrierSummary(rows, order), times);
       dashEl.hidden = items.length === 0;
@@ -609,7 +629,7 @@
       );
       carriers = [...carriers].sort((a, b) => a.localeCompare(b));
       chipsEl.innerHTML = carriers.map((code) =>
-        `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}" data-tip="Query ${code} boxes when you start a job. Does not hide rows in the table.">${code}</button>`
+        `<button type="button" class="chip${selected.has(code) ? " on" : ""}" data-carrier="${code}" data-tip="Query ${code} boxes when you start a job.">${code}</button>`
       ).join("");
     }
 
@@ -649,21 +669,23 @@
         }
       }
 
+      const allRows = data.rows || [];
+      const scopedRows = carrierFilter
+        ? allRows.filter((row) => row.carrier === carrierFilter)
+        : allRows;
+      const displayCounts = carrierFilter ? countRows(scopedRows) : (data.counts || {});
+      const displayTotal = carrierFilter ? scopedRows.length : total;
+
       countsEl.innerHTML = [
-        `<button type="button" class="count${filter === "ALL" ? " active" : ""}" data-filter="ALL"><strong>${total}</strong><span>All</span></button>`,
+        `<button type="button" class="count${filter === "ALL" ? " active" : ""}" data-filter="ALL"><strong>${displayTotal}</strong><span>All</span></button>`,
         ...COUNT_KEYS.map(([key, label]) =>
-          `<button type="button" class="count${filter === key ? " active" : ""}" data-filter="${key}"><strong>${data.counts[key] || 0}</strong><span>${label}</span></button>`
+          `<button type="button" class="count${filter === key ? " active" : ""}" data-filter="${key}"><strong>${displayCounts[key] || 0}</strong><span>${label}</span></button>`
         ),
       ].join("");
 
-      renderDash(data.rows || [], data.carriers || knownCarriers, data.carrier_times || {});
+      renderDash(allRows, data.carriers || knownCarriers, data.carrier_times || {});
 
-      const rows = (data.rows || []).filter((row) => {
-        if (filter === "ALL") return true;
-        if (filter === "QUERYING") return ["querying", "challenge"].includes(row.phase);
-        if (filter === "PENDING") return row.phase === "pending";
-        return row.status === filter;
-      });
+      const rows = scopedRows.filter(matchesStatusFilter);
       const pageSize = Number(pageSizeEl.value) || 20;
       if (filter !== lastFilter || carrierFilter !== lastCarrierFilter) {
         page = 1;
@@ -685,7 +707,7 @@
       const pageRows = rows.slice(start, start + pageSize);
       const hasRows = rows.length > 0;
       emptyEl.hidden = hasRows;
-      emptyEl.textContent = data.rows.length
+      emptyEl.textContent = allRows.length
         ? "No rows match this filter."
         : "No container rows. Add boxes to input/containers.xlsx, then reload.";
       rowsEl.innerHTML = pageRows.map((row) => `
