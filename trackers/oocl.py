@@ -10,6 +10,7 @@ import time
 from urllib.parse import quote
 
 from challenges import CHALLENGE_CODE_JS
+from chrome_control import SystemChromeError
 from event_text import (
     classify_classifier,
     classify_empty,
@@ -122,21 +123,84 @@ _CLICK_VIEW_DETAILS_JS = """() => {
     return 0;
 }"""
 _VISIBLE_EVENT_COUNT_JS = """() => {
+    const seen = new Set();
     let n = 0;
+    // The current OOCL drawer renders the fixed header and data rows in
+    // separate tables. Count dated rows inside event-table directly so an
+    // opened drawer is not mistaken for the collapsed summary page.
+    for (const tr of document.querySelectorAll(".event-table tbody tr")) {
+        const row = (tr.innerText || "").replace(/\\s+/g, " ").trim();
+        if (!row || seen.has(row)) continue;
+        if (/\\d{4}|\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\b/i.test(row)) {
+            seen.add(row);
+            n += 1;
+        }
+    }
     for (const table of document.querySelectorAll("table")) {
         const header = (table.innerText || "").toLowerCase();
         if (!/(event|dynamic node|status|activity|movement)/.test(header)) continue;
         for (const tr of table.querySelectorAll("tr")) {
             const row = (tr.innerText || "").replace(/\\s+/g, " ").trim();
-            if (!row || /^(date|event|status|activity|dynamic node)\\b/i.test(row)) {
+            if (!row || seen.has(row) || /^(date|event|status|activity|dynamic node)\\b/i.test(row)) {
                 continue;
             }
             if (/\\d{4}|\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\b/i.test(row)) {
+                seen.add(row);
                 n += 1;
             }
         }
     }
     return n;
+}"""
+_PREPARE_DETAILS_SCREENSHOT_JS = """() => {
+    // OOCL places the expanded result in a fixed-height drawer and gives the
+    // event table another nested scrollbar. Let both grow for one complete
+    // evidence image instead of capturing only the visible viewport.
+    const drawer = document.querySelector(".ant-drawer-open");
+    if (!drawer) return false;
+    let style = document.getElementById("container-tracker-oocl-full-details");
+    if (!style) {
+        style = document.createElement("style");
+        style.id = "container-tracker-oocl-full-details";
+        document.head.appendChild(style);
+    }
+    style.textContent = `
+        .ant-drawer-open .ant-drawer-content-wrapper,
+        .ant-drawer-open .ant-drawer-content,
+        .ant-drawer-open .ant-drawer-wrapper-body,
+        .ant-drawer-open .ant-drawer-body,
+        .ant-drawer-open .event-table,
+        .ant-drawer-open .event-table .ant-spin-nested-loading,
+        .ant-drawer-open .event-table .ant-spin-container,
+        .ant-drawer-open .event-table .ant-table,
+        .ant-drawer-open .event-table .ant-table-container,
+        .ant-drawer-open .event-table .ant-table-body {
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+        }
+    `;
+    const grow = (selector) => {
+        for (const el of drawer.querySelectorAll(selector)) {
+            el.style.setProperty("height", "auto", "important");
+            el.style.setProperty("max-height", "none", "important");
+            el.style.setProperty("overflow", "visible", "important");
+        }
+    };
+    grow(".ant-drawer-content, .ant-drawer-wrapper-body, .ant-drawer-body");
+    grow(".event-table, .event-table .ant-spin-nested-loading, .event-table .ant-spin-container");
+    grow(".event-table .ant-table, .event-table .ant-table-container, .event-table .ant-table-body");
+    const body = drawer.querySelector(".ant-drawer-body");
+    if (body) body.scrollTop = 0;
+    const tableBody = drawer.querySelector(".event-table .ant-table-body");
+    if (tableBody) tableBody.scrollTop = 0;
+    // Force layout now. The style element remains in place if Vue refreshes
+    // inline styles while the screenshot is being captured.
+    void drawer.offsetHeight;
+    return {
+        rows: drawer.querySelectorAll(".event-table tbody tr.ant-table-row").length,
+        height: body ? Math.max(body.scrollHeight, body.getBoundingClientRect().height) : 0,
+    };
 }"""
 _SUBMIT_SEARCH_JS = """(container) => {
     if (typeof allowAllCookiePolicy === "function") {
@@ -485,7 +549,11 @@ class OoclTracker(BaseTracker):
     system_chrome_challenge = "CAPTCHA"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
+    screenshot_cookie_wait_ms = 0
     screenshot_selectors = (
+        ".ant-drawer-open .ant-drawer-body",
+        ".ant-drawer-open .ant-drawer-content",
+        "table:has-text('Container No.')",
         "table:has-text('Vessel Departed')",
         "table:has-text('Departure')",
         "table:has-text('Event')",
@@ -499,6 +567,7 @@ class OoclTracker(BaseTracker):
         self._entry_page = page
         self._result_urls: list[str] = []
         self._details_expanded = False
+        self._results_waited = False
 
     async def _page_challenge_code(self) -> str | None:
         code = await super()._page_challenge_code()
@@ -663,8 +732,9 @@ class OoclTracker(BaseTracker):
                 self._details_expanded = True
             return
         prior_set = {url for url in prior if not _is_blank_url(url)}
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
+        # Fifteen short checks are enough for a details tab/section to appear;
+        # the summary page itself remains parseable when OOCL keeps it folded.
+        for _attempt in range(15):
             if prior_set:
                 await self._focus_new_result(prior_set)
             now = await self._visible_event_count()
@@ -678,11 +748,19 @@ class OoclTracker(BaseTracker):
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
-        await super().prepare_for_screenshot()
+        # The expanded OOCL result is itself a drawer. The generic overlay
+        # cleanup treats dialogs as disposable, so only dismiss cookies here
+        # and preserve the result drawer before expanding its scroll regions.
+        await self.dismiss_cookies(wait_ms=self.screenshot_cookie_wait_ms)
+        try:
+            await self.page.evaluate(_PREPARE_DETAILS_SCREENSHOT_JS)
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not expand the OOCL drawer for its screenshot.")
 
     async def search(self, container: str) -> None:
         self._search_submitted = False
         self._details_expanded = False
+        self._results_waited = False
         await self._focus_entry()
         await self.dismiss_cookies(wait_ms=0)
         await self._select_container_search()
@@ -698,9 +776,7 @@ class OoclTracker(BaseTracker):
         await field.first.fill("")
         await field.first.fill(container)
         await self._pin_entry_tab()
-        before = await self._tab_urls()
         await self._submit_container_search(container)
-        await self._adopt_result_tab(before)
         self._search_submitted = True
         await self._wait_for_results()
         await self.expand_result_details()
@@ -789,23 +865,6 @@ class OoclTracker(BaseTracker):
             if _is_related_tab(url) or extra is self.page:
                 urls.append(url)
         return urls
-
-    async def _adopt_result_tab(self, before: list[str]) -> None:
-        can_see_tabs = callable(getattr(self.page, "list_tab_urls", None)) or getattr(
-            getattr(self.page, "context", None), "pages", None
-        ) is not None
-        if not can_see_tabs:
-            return
-        prior = {url for url in before if not _is_blank_url(url)}
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if await self._focus_new_result(prior):
-                return
-            try:
-                await self.page.wait_for_timeout(300)
-            except Exception:  # noqa: BLE001
-                await asyncio.sleep(0.3)
-        # Same-tab navigation is still usable.
 
     async def _focus_new_result(self, prior: set[str]) -> bool:
         focus = getattr(self.page, "focus_tab", None)
@@ -934,6 +993,9 @@ class OoclTracker(BaseTracker):
         ) and "unrecognized" not in text
 
     async def _wait_for_results(self) -> None:
+        if self._results_waited:
+            return
+        self._results_waited = True
         try:
             await self.page.wait_for_function(
                 """() => {
@@ -952,11 +1014,14 @@ class OoclTracker(BaseTracker):
                         text.includes("no result") ||
                         text.includes("no tracking") ||
                         dead ||
-                        (DETECT_CHALLENGE)()
+                        (DETECT_CHALLENGE)() ||
+                        (document.readyState !== "loading" && text.trim().length > 80)
                     );
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
-                timeout=35_000,
+                timeout=5_000,
             )
+        except SystemChromeError:
+            raise
         except Exception:  # noqa: BLE001
             pass
 

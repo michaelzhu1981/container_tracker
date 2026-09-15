@@ -236,6 +236,7 @@ class BaseTracker(ABC):
     timeline_order: TimelineOrder = "oldest_first"
     tracking_url: str = ""
     screenshot_selectors: tuple[str, ...] = ()
+    screenshot_cookie_wait_ms: int = 1500
     wait_in_current_browser: bool = False
     use_system_chrome: bool = False
     system_chrome_host: str = ""
@@ -550,7 +551,7 @@ class BaseTracker(ABC):
         )
 
     async def prepare_for_screenshot(self) -> None:
-        await self.dismiss_cookies(wait_ms=1500)
+        await self.dismiss_cookies(wait_ms=self.screenshot_cookie_wait_ms)
         dismiss_onboarding = getattr(self, "dismiss_onboarding", None)
         if callable(dismiss_onboarding):
             try:
@@ -717,6 +718,8 @@ class BaseTracker(ABC):
                     error_code="TIMEOUT",
                     error=f"Timed out loading the tracking page: {exc}",
                 )
+            from chrome_control import SystemChromeError
+
             LOGGER.exception("Tracker failed for %s %s", self.carrier_code, container)
             closed = "has been closed" in str(exc) or "TargetClosed" in type(exc).__name__
             if not closed:
@@ -730,6 +733,6 @@ class BaseTracker(ABC):
                 screenshot_path=relative_to_root(self._screenshot),
                 html_path=relative_to_root(self._html),
                 forced_status="CHECK_FAILED",
-                error_code="NAVIGATION" if not closed else "CLOUDFLARE",
+                error_code=exc.code if isinstance(exc, SystemChromeError) else ("NAVIGATION" if not closed else "CLOUDFLARE"),
                 error=str(exc),
             )

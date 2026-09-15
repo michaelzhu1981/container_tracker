@@ -1,6 +1,7 @@
 import pytest
 
 from system_chrome import (
+    ChromeTarget,
     SystemChromeError,
     SystemChromePage,
     _as_iife,
@@ -138,19 +139,19 @@ def test_close_chrome_windows_returns_zero_when_chrome_is_gone(monkeypatch):
     assert close_chrome_windows(host="hapag-lloyd.com") == 0
 
 
-def test_system_chrome_page_close_closes_host_windows(monkeypatch):
+def test_system_chrome_page_close_only_closes_bound_window(monkeypatch):
     import asyncio
 
-    closed: list[str] = []
+    closed = []
 
-    def fake(*, host: str) -> int:
-        closed.append(host)
+    def fake(pid, action, *, target, **args) -> int:
+        closed.append((pid, action, target))
         return 1
 
     async def no_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr("system_chrome.close_chrome_windows", fake)
+    monkeypatch.setattr("system_chrome.chrome_command", fake)
     monkeypatch.setattr("system_chrome.asyncio.sleep", no_sleep)
     page = SystemChromePage(
         "https://www.cma-cgm.com/ebusiness/tracking",
@@ -158,25 +159,27 @@ def test_system_chrome_page_close_closes_host_windows(monkeypatch):
         carrier="CMDU",
         challenge_name="DataDome",
     )
+    page._target = ChromeTarget(123, 45, 67)
     asyncio.run(page.close())
-    assert closed == ["cma-cgm.com"]
+    assert closed == [(123, "close_window", ChromeTarget(123, 45, 67))]
     assert page.is_closed() is True
 
 
 def test_system_chrome_evaluate_passes_argument(monkeypatch):
     seen: list[str] = []
 
-    def fake(script, *, host, tab_url=None):
+    def fake(pid, action, *, target, script):
         seen.append(script)
-        return "cont"
+        return '"cont"'
 
-    monkeypatch.setattr("system_chrome.chrome_js", fake)
+    monkeypatch.setattr("system_chrome.chrome_command", fake)
     page = SystemChromePage(
         "https://www.oocl.com/track",
         host="oocl.com",
         carrier="OOLU",
         challenge_name="CAPTCHA",
     )
+    page._target = ChromeTarget(123, 45, 67)
 
     async def run():
         return await page.evaluate("(value) => value", "cont")
@@ -258,11 +261,14 @@ def test_stitch_pngs_vertically_keeps_both_slices(tmp_path):
     assert dest.stat().st_size > top.stat().st_size
 
 
-def test_capture_chrome_png_fails_when_window_capture_fails(tmp_path, monkeypatch):
+def test_capture_chrome_png_uses_dom_fallback_when_window_capture_fails(tmp_path, monkeypatch):
+    dest = tmp_path / "shot.png"
     monkeypatch.setattr("system_chrome._try_window_screenshot", lambda *args, **kwargs: False)
+    monkeypatch.setattr("system_chrome._png_looks_valid", lambda path: True)
     monkeypatch.setattr(
         "system_chrome.chrome_js",
-        lambda script, host: (_ for _ in ()).throw(AssertionError("paint fallback should not run")),
+        lambda script, host: TINY_PNG,
     )
-    with pytest.raises(SystemChromeError, match="Chrome window"):
-        capture_chrome_png(tmp_path / "shot.png", host="cma-cgm.com")
+    wrote = capture_chrome_png(dest, host="cma-cgm.com")
+    assert wrote == dest
+    assert wrote.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

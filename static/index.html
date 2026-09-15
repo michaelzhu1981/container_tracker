@@ -734,7 +734,7 @@
           <td>${esc(row.pol || "—")}</td>
           <td class="event" title="${esc(row.latest_event || "")}">${esc(row.latest_event || "—")}</td>
           <td>${esc(row.check_result || "—")}${row.screenshot ? " · " + shotLink(row.screenshot) : ""}</td>
-          <td class="event">${esc(row.error_code || row.error || "—")}</td>
+          <td class="event" title="${esc(row.error || (row.challenge && row.challenge.mode === 'browser_permission' ? 'In Chrome: View → Developer → Allow JavaScript from Apple Events.' : ''))}">${esc(row.error_code || row.error || "—")}</td>
         </tr>
       `).join("");
       pagerEl.hidden = !hasRows;

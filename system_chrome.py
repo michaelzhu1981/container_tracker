@@ -13,8 +13,13 @@ import subprocess
 import tempfile
 import time
 import zlib
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
+
+from chrome_control import (
+    ChromeTarget, SystemChromeError, chrome_command, normal_chrome_pid, launch_normal_chrome,
+)
 
 LOGGER = logging.getLogger("container_tracker")
 
@@ -24,8 +29,7 @@ _HAS_TEXT_RE = re.compile(
 )
 
 
-class SystemChromeError(RuntimeError):
-    pass
+_CAPTURE_TARGET: ContextVar[ChromeTarget | None] = ContextVar("chrome_capture_target", default=None)
 
 
 def _as_iife(script: str) -> str:
@@ -131,6 +135,10 @@ def chrome_js(script: str, *, host: str, tab_url: str | None = None) -> Any:
         + _as_iife(script)
         + "; return r === undefined ? true : r; } catch (e) { return null; } })())"
     )
+    target = _CAPTURE_TARGET.get()
+    if target is not None:
+        raw = chrome_command(target.pid, "evaluate", target=target, script=wrapped)
+        return _parse_js_result(raw)
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
         handle.write(wrapped)
         js_path = handle.name
@@ -159,8 +167,8 @@ def chrome_js(script: str, *, host: str, tab_url: str | None = None) -> Any:
         Path(js_path).unlink(missing_ok=True)
     if raw in {"", "missing value"}:
         raise SystemChromeError(
-            "Chrome JavaScript from Apple Events is off. "
-            "In Google Chrome: View → Developer → Allow JavaScript from Apple Events."
+            "Could not find the requested Chrome tab or read its JavaScript result.",
+            "TAB_NOT_FOUND",
         )
     return _parse_js_result(raw)
 
@@ -597,6 +605,9 @@ def _png_looks_valid(path: Path) -> bool:
 
 
 def activate_chrome_host(host: str) -> bool:
+    target = _CAPTURE_TARGET.get()
+    if target is not None:
+        return bool(chrome_command(target.pid, "activate", target=target))
     host_lit = json.dumps(host)
     source = f"""
     tell application "Google Chrome"
@@ -622,6 +633,12 @@ def activate_chrome_host(host: str) -> bool:
 
 
 def chrome_window_rect(*, host: str) -> tuple[int, int, int, int] | None:
+    target = _CAPTURE_TARGET.get()
+    if target is not None:
+        bounds = chrome_command(target.pid, "bounds", target=target)
+        if isinstance(bounds, dict):
+            return (int(bounds["x"]), int(bounds["y"]), int(bounds["width"]), int(bounds["height"]))
+        return None
     host_lit = json.dumps(host)
     source = f"""
     tell application "Google Chrome"
@@ -901,6 +918,17 @@ def capture_chrome_png(path: str | Path, *, host: str, selector: str | None = No
     dest = Path(path)
     if _try_window_screenshot(dest, host=host, selector=selector):
         return dest
+    # Screen Recording can be unavailable to a background service even when
+    # Chrome automation is allowed. Paint the bound result DOM as a reliable
+    # fallback so a successful query never loses its evidence image.
+    try:
+        data = _chrome_root_js(_DOM_SCREENSHOT_JS, host=host, selector=selector)
+        write_png_data_url(data, dest)
+        if _png_looks_valid(dest):
+            LOGGER.info("Used DOM screenshot fallback for %s", host)
+            return dest
+    except (OSError, SystemChromeError, ValueError):
+        dest.unlink(missing_ok=True)
     raise SystemChromeError(
         f"Could not capture the Chrome window for {host}. "
         "Keep that window visible and try again."
@@ -1050,16 +1078,52 @@ class SystemChromePage:
         appear_s: float = 30.0,
         carrier: str = "CMDU",
         challenge_name: str = "DataDome",
+        wait_for_permission: bool = True,
+        on_permission_wait: Callable[[dict], None] | None = None,
     ) -> None:
         self._target_url = url
         self._host = host
         self._carrier = carrier
         self._challenge_name = challenge_name
+        self.wait_for_permission = wait_for_permission
+        self.on_permission_wait = on_permission_wait
         self.should_abort = should_abort
         self.appear_s = appear_s
         self.keyboard = _Keyboard(self)
         self._closed = False
-        self.tab_url: str | None = None
+        self._target: ChromeTarget | None = None
+        self._entry_target: ChromeTarget | None = None
+        self._tab_url: str | None = None
+        self._known_urls: dict[str, ChromeTarget] = {}
+
+    def _bound_target(self) -> ChromeTarget:
+        if self._target is None:
+            raise SystemChromeError("No Chrome tracking tab is bound.", "TAB_NOT_FOUND")
+        return self._target
+
+    def _command(self, action: str, **args) -> Any:
+        target = self._bound_target()
+        return chrome_command(target.pid, action, target=target, **args)
+
+    def _remember_tab(self, tab: dict) -> ChromeTarget:
+        current = self._bound_target()
+        target = ChromeTarget(current.pid, current.window_id, int(tab["id"]))
+        if tab.get("url"):
+            self._known_urls[tab["url"]] = target
+        return target
+
+    @property
+    def tab_url(self) -> str | None:
+        return self._tab_url
+
+    @tab_url.setter
+    def tab_url(self, value: str | None) -> None:
+        # OOCL resets this handle when returning to its pinned entry tab.
+        if value is None and self._entry_target is not None:
+            self._target = self._entry_target
+        elif value in self._known_urls:
+            self._target = self._known_urls[value]
+        self._tab_url = value
 
     async def start(self) -> None:
         print()
@@ -1067,19 +1131,40 @@ class SystemChromePage:
         print(f"Complete {self._challenge_name} in that window and keep it open.")
         print("If Chrome asks, enable View → Developer → Allow JavaScript from Apple Events.")
         print()
-        if not chrome_tab_url(host=self._host):
-            open_chrome_window(self._target_url)
+        # Keep the user's existing verification cookies, but exclude every
+        # Playwright/custom-profile instance when resolving the normal process.
+        pid = await asyncio.to_thread(normal_chrome_pid)
+        if pid is None:
+            await asyncio.to_thread(launch_normal_chrome)
         deadline = time.monotonic() + self.appear_s
+        last_error = None
         while time.monotonic() < deadline:
             if self.should_abort and self.should_abort():
-                raise SystemChromeError("Stopped before Chrome opened the tracking page.")
-            if chrome_tab_url(host=self._host):
-                self._closed = False
-                await self._wait_until_js_enabled()
-                return
+                raise SystemChromeError("Stopped before Chrome opened the tracking page.", "CANCELLED")
+            pid = await asyncio.to_thread(normal_chrome_pid)
+            if pid is not None:
+                try:
+                    await asyncio.to_thread(chrome_command, pid, "inventory")
+                except SystemChromeError as exc:
+                    if exc.code == "BROWSER_PERMISSION":
+                        raise
+                    last_error = exc
+                else:
+                    # Never retry a window-creation mutation: it may have
+                    # succeeded even if its response was lost.
+                    window = await asyncio.to_thread(chrome_command, pid, "new_window", url=self._target_url)
+                    tab = window["tab"]
+                    self._target = ChromeTarget(pid, window["id"], tab["id"])
+                    self._entry_target = self._target
+                    self._remember_tab(tab)
+                    self._closed = False
+                    LOGGER.info("Bound %s Chrome pid=%s window=%s tab=%s", self._carrier, pid, window["id"], tab["id"])
+                    await self._wait_until_js_enabled()
+                    return
             await asyncio.sleep(0.5)
         raise SystemChromeError(
             f"Google Chrome did not open the {self._carrier} tracking page."
+            + (f" {last_error}" if last_error else ""), "BROWSER_CLOSED",
         )
 
     async def _wait_until_js_enabled(self, timeout_s: float = 600) -> None:
@@ -1088,35 +1173,55 @@ class SystemChromePage:
             f"Then complete {self._challenge_name} and keep the window open."
         )
         deadline = time.monotonic() + timeout_s
-        last = ""
+        last: SystemChromeError | None = None
         while time.monotonic() < deadline:
             if self.should_abort and self.should_abort():
-                raise SystemChromeError("Stopped while waiting for Chrome JavaScript.")
+                raise SystemChromeError("Stopped while waiting for Chrome JavaScript.", "CANCELLED")
             try:
-                value = await asyncio.to_thread(chrome_js, "() => 1", host=self._host)
+                value = await self.evaluate("() => 1")
                 if value in {1, "1", True}:
+                    if last is not None and self.on_permission_wait:
+                        self.on_permission_wait({"code": None})
                     print(
                         "Chrome Apple Event JavaScript is on. "
                         f"Waiting for {self._challenge_name} if needed."
                     )
                     return
             except SystemChromeError as exc:
-                last = str(exc)
+                if exc.code != "BROWSER_PERMISSION":
+                    raise
+                if not self.wait_for_permission:
+                    raise
+                if last is None:
+                    LOGGER.warning("%s Chrome permission required: %s", self._carrier, exc)
+                    if self.on_permission_wait:
+                        self.on_permission_wait({
+                            "code": exc.code, "mode": "browser_permission",
+                            "timeout_seconds": int(timeout_s),
+                        })
+                last = exc
             await asyncio.sleep(2)
         raise SystemChromeError(
-            last
-            or "Chrome still blocks Apple Event JavaScript. "
-            "Enable View → Developer → Allow JavaScript from Apple Events."
+            str(last) if last else "Chrome did not return a valid JavaScript probe.",
+            last.code if last else "NAVIGATION",
         )
 
     @property
     def url(self) -> str:
-        if self.tab_url:
-            return self.tab_url
-        return chrome_tab_url(host=self._host)
+        tab = self._command("tab")
+        self._remember_tab(tab)
+        return tab["url"]
 
     def is_closed(self) -> bool:
-        return self._closed or not bool(chrome_tab_url(host=self._host))
+        if self._closed or self._target is None:
+            return True
+        try:
+            self._command("tab")
+            return False
+        except SystemChromeError as exc:
+            if exc.code in {"BROWSER_CLOSED", "TAB_NOT_FOUND"}:
+                return True
+            raise
 
     def locator(self, selector: str) -> SystemLocator:
         return SystemLocator(self, selector)
@@ -1130,40 +1235,65 @@ class SystemChromePage:
     async def evaluate(self, script: str, arg: Any = None) -> Any:
         if arg is not None:
             script = f"((fn) => fn({json.dumps(arg)}))({script.strip()})"
-        return await asyncio.to_thread(
-            chrome_js, script, host=self._host, tab_url=self.tab_url
-        )
+        wrapped = "JSON.stringify((function(){ const r = " + _as_iife(script) + "; return r === undefined ? true : r; })())"
+        raw = await asyncio.to_thread(self._command, "evaluate", script=wrapped)
+        if raw is None or raw == "":
+            raise SystemChromeError("Chrome returned no JavaScript result.", "NAVIGATION")
+        return _parse_js_result(raw)
 
     async def list_tab_urls(self) -> list[str]:
-        return await asyncio.to_thread(list_chrome_tab_urls)
+        tabs = await asyncio.to_thread(self._command, "tabs")
+        for tab in tabs:
+            self._remember_tab(tab)
+        return [tab["url"] for tab in tabs]
 
     async def open_tab(self, url: str) -> None:
-        await asyncio.to_thread(open_chrome_tab, url)
-        self.tab_url = url
-        await asyncio.to_thread(activate_chrome_tab, url)
+        tab = await asyncio.to_thread(self._command, "new_tab", url=url)
+        self._target = self._remember_tab(tab)
+        # Preserve the requested URL as an alias even if it already redirected.
+        self._known_urls[url] = self._target
+        self._tab_url = tab["url"]
+        await asyncio.to_thread(self._command, "activate")
 
     async def focus_tab(self, url: str) -> None:
-        self.tab_url = url
-        await asyncio.to_thread(activate_chrome_tab, url)
+        if url not in self._known_urls:
+            await self.list_tab_urls()
+        target = self._known_urls.get(url)
+        if target is None:
+            raise SystemChromeError("Could not locate the requested tracking tab.", "TAB_NOT_FOUND")
+        self._target = target
+        self._tab_url = url
+        await asyncio.to_thread(self._command, "activate")
 
     async def close_tab(self, url: str) -> None:
-        await asyncio.to_thread(close_chrome_tab, url)
-        if self.tab_url == url:
+        target = self._known_urls.get(url)
+        if target is None:
+            await self.list_tab_urls()
+            target = self._known_urls.get(url)
+        if target is None or target == self._entry_target:
+            return
+        try:
+            await asyncio.to_thread(chrome_command, target.pid, "close_tab", target=target)
+        except SystemChromeError as exc:
+            if exc.code not in {"TAB_NOT_FOUND", "BROWSER_CLOSED"}:
+                raise
+        self._known_urls = {key: value for key, value in self._known_urls.items() if value != target}
+        if self._target == target:
             self.tab_url = None
 
     async def close_other_host_tabs(self, keep_contains: str) -> None:
-        await asyncio.to_thread(
-            close_chrome_tabs, host=self._host, keep_contains=keep_contains
-        )
-        if self.tab_url and keep_contains.lower() not in self.tab_url.lower():
-            self.tab_url = None
+        # Only this session's window; never sweep other carriers or user windows.
+        for url in await self.list_tab_urls():
+            if keep_contains.lower() not in url.lower():
+                await self.close_tab(url)
 
     async def content(self) -> str:
         html = await self.evaluate("() => document.documentElement.outerHTML")
         return html or ""
 
     async def goto(self, url: str, wait_until: str | None = None) -> None:
-        await asyncio.to_thread(set_chrome_tab_url, url, host=self._host)
+        tab = await asyncio.to_thread(self._command, "navigate", url=url)
+        self._remember_tab(tab)
         await asyncio.sleep(1.0)
 
     async def wait_for_timeout(self, ms: int) -> None:
@@ -1183,7 +1313,7 @@ class SystemChromePage:
                 if await self.evaluate(script):
                     return True
             except SystemChromeError:
-                pass
+                raise
             await asyncio.sleep(interval)
         raise TimeoutError("still challenged")
 
@@ -1199,16 +1329,18 @@ class SystemChromePage:
     ) -> None:
         if not path:
             return
-        if self.tab_url:
-            await asyncio.to_thread(activate_chrome_tab, self.tab_url)
-        await asyncio.to_thread(
-            capture_chrome_png, path, host=self._host, selector=selector
-        )
+        token = _CAPTURE_TARGET.set(self._bound_target())
+        try:
+            await asyncio.to_thread(capture_chrome_png, path, host=self._host, selector=selector)
+        finally:
+            _CAPTURE_TARGET.reset(token)
 
     async def close(self) -> None:
         self._closed = True
+        if self._target is None:
+            return
         try:
-            closed = await asyncio.to_thread(close_chrome_windows, host=self._host)
+            closed = await asyncio.to_thread(self._command, "close_window")
         except Exception:  # noqa: BLE001
             LOGGER.info("Could not close the Chrome window for %s.", self._carrier)
             return

@@ -7,10 +7,12 @@ from trackers.base import TrackerError, looks_like_no_result
 from trackers.oocl import (
     OoclTracker,
     _CLICK_VIEW_DETAILS_JS,
+    _PREPARE_DETAILS_SCREENSHOT_JS,
     _SEARCH_FIELD_SELECTORS,
     _SUBMIT_BUTTON_SELECTORS,
     _SUBMIT_SEARCH_JS,
     _VIEW_DETAILS_SELECTORS,
+    _VISIBLE_EVENT_COUNT_JS,
     is_oocl_entry_url,
     is_oocl_site_error_page,
     oocl_popup_url,
@@ -130,6 +132,12 @@ def test_view_details_selectors_cover_english_label():
     assert "a:has-text('View Details')" in _VIEW_DETAILS_SELECTORS
     assert "OOCL View Details" in _CLICK_VIEW_DETAILS_JS
     assert "查看详情" in _CLICK_VIEW_DETAILS_JS
+
+
+def test_oocl_screenshot_prefers_complete_expanded_drawer():
+    assert OoclTracker.screenshot_selectors[0] == ".ant-drawer-open .ant-drawer-body"
+    assert ".event-table .ant-table-body" in _PREPARE_DETAILS_SCREENSHOT_JS
+    assert 'querySelectorAll(".event-table tbody tr")' in _VISIBLE_EVENT_COUNT_JS
 
 
 class _ExpandPage:
@@ -259,6 +267,45 @@ async def test_parse_events_clicks_view_details_before_reading_table():
     events = await OoclTracker(Page()).parse_events()
     assert events[0].type == "DEPA"
     assert any("View Details" in script for script in scripts)
+
+
+@pytest.mark.asyncio
+async def test_result_wait_is_bounded_and_not_repeated():
+    calls = []
+
+    class Page:
+        async def wait_for_function(self, script, timeout=0):
+            calls.append(timeout)
+            raise TimeoutError("result marker missing")
+
+    tracker = OoclTracker(Page())
+    await tracker._wait_for_results()
+    await tracker._wait_for_results()
+    assert calls == [5_000]
+
+
+@pytest.mark.asyncio
+async def test_view_details_wait_is_bounded_to_three_seconds(monkeypatch):
+    page = _ExpandPage()
+    tracker = OoclTracker(page)
+
+    async def visible_count():
+        return 0
+
+    async def clicked():
+        return 1
+
+    sleeps = []
+
+    async def sleep(ms):
+        sleeps.append(ms)
+
+    tracker._visible_event_count = visible_count
+    tracker._click_view_details = clicked
+    tracker._sleep = sleep
+    await tracker.expand_result_details()
+    assert tracker._details_expanded is True
+    assert sleeps == [200] * 15
 
 
 def test_site_404_is_navigation_not_container_miss():

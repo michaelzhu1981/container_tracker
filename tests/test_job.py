@@ -79,6 +79,19 @@ def test_job_start_rejects_empty(tmp_path: Path):
         manager.request_stop()
 
 
+def test_browser_permission_wait_has_actionable_message(tmp_path):
+    source = tmp_path / "in.xlsx"
+    _write_input(source, [("TGBU5255226", "OOLU")])
+    manager = JobManager(input_path=source, output_path=tmp_path / "out.xlsx")
+    manager._on_progress({
+        "index": 0, "phase": "challenge",
+        "challenge": {"code": "BROWSER_PERMISSION", "mode": "browser_permission", "timeout_seconds": 600},
+    })
+    snap = manager.snapshot()
+    assert "Allow JavaScript from Apple Events" in snap["job"]["message"]
+    assert snap["rows"][0]["phase"] == "challenge"
+
+
 @pytest.mark.asyncio
 async def test_job_start_keeps_all_carriers_on_the_board(tmp_path: Path):
     source = tmp_path / "in.xlsx"

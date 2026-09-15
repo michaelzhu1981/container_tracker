@@ -705,3 +705,25 @@ async def test_cmdu_unlock_failure_pauses_remaining(tmp_path: Path, monkeypatch)
     assert by_container["CMAU7662786"].error_code == "CAPTCHA"
     assert "current Chrome window" in (by_container["CMAU7662786"].error or "")
     assert by_container["YMLU1234567"].status == "NOT_LOADED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["BROWSER_PERMISSION", "TAB_NOT_FOUND"])
+async def test_browser_initialization_failure_is_not_captcha(tmp_path, monkeypatch, code):
+    from chrome_control import SystemChromeError
+    from runner import run_batch
+
+    _fake_playwright_browser(monkeypatch)
+
+    async def fail_start(self):
+        raise SystemChromeError("Chrome initialization failed", code)
+
+    monkeypatch.setattr("runner.CarrierBrowser.start", fail_start)
+    rows = [
+        {"Container": "TGBU5255226", "Carrier": "OOLU", "extras": {}},
+        {"Container": "TCNU1971808", "Carrier": "OOLU", "extras": {}},
+    ]
+    results, _ = await run_batch(rows, output_path=tmp_path / "out.xlsx")
+    assert [r.error_code for r in results] == [code, code]
+    assert [r.status for r in results] == ["CHECK_FAILED", "CHECK_FAILED"]
+    assert "initialization failed" in results[1].error

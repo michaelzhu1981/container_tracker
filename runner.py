@@ -180,6 +180,7 @@ class CarrierBrowser:
         allow_stdin: bool = True,
         should_abort: Callable[[], bool] | None = None,
         manual_challenge_lock: asyncio.Lock | None = None,
+        wait_for_challenge: bool = True,
     ) -> None:
         self.playwright = playwright
         self.carrier = carrier
@@ -187,6 +188,7 @@ class CarrierBrowser:
         self.allow_stdin = allow_stdin
         self.should_abort = should_abort
         self.manual_challenge_lock = manual_challenge_lock
+        self.wait_for_challenge = wait_for_challenge
         self.on_challenge: Callable[[dict], None] | None = None
         self.context = None
         self.page = None
@@ -234,6 +236,8 @@ class CarrierBrowser:
             carrier=settings["carrier"],
             challenge_name=settings["challenge_name"],
             should_abort=self.should_abort,
+            wait_for_permission=self.wait_for_challenge,
+            on_permission_wait=lambda payload: self.on_challenge(payload) if self.on_challenge else None,
         )
         await self.page.start()
 
@@ -613,17 +617,22 @@ async def run_single(
         )
     async with async_playwright() as playwright:
         session = CarrierBrowser(
-            playwright, carrier, headed=default_headed_for(carrier, headed)
-        )
-        await session.start()
-        result = await _track_one(
-            session.page,
-            carrier,
-            container,
+            playwright, carrier, headed=default_headed_for(carrier, headed),
             wait_for_challenge=wait_for_challenge,
-            browser=session,
         )
-        await session.close()
+        try:
+            await session.start()
+            result = await _track_one(
+                session.page, carrier, container,
+                wait_for_challenge=wait_for_challenge, browser=session,
+            )
+        except SystemChromeError as exc:
+            result = _session_failed_result(
+                {"Container": container, "Carrier": carrier}, checked_at(),
+                exc.code, str(exc), wait_for_challenge=wait_for_challenge,
+            )
+        finally:
+            await session.close()
     return result
 
 
@@ -816,8 +825,16 @@ async def run_batch(
                     allow_stdin=allow_stdin,
                     should_abort=lambda: _cancelled(cancel_event),
                     manual_challenge_lock=manual_challenge_lock,
+                    wait_for_challenge=wait_for_challenge,
                 )
                 first_idx = indices[0]
+                session.on_challenge = lambda payload: notify({
+                    "index": first_idx, "total": total,
+                    "phase": "challenge" if payload.get("code") else "querying",
+                    "challenge": payload if payload.get("code") else None,
+                    "result": None,
+                })
+                notify({"index": first_idx, "total": total, "phase": "querying", "result": None})
                 try:
                     await session.start()
                 except SystemChromeError as exc:
@@ -830,7 +847,7 @@ async def run_batch(
                         _session_failed_result(
                             rows[first_idx],
                             checked_at(),
-                            "CAPTCHA",
+                            exc.code,
                             str(exc),
                             wait_for_challenge=wait_for_challenge,
                         ),
@@ -841,12 +858,9 @@ async def run_batch(
                             _paused_result(
                                 rows[idx],
                                 checked_at(),
-                                "CAPTCHA",
+                                exc.code,
                                 reason=(
-                                    f"Skipped remaining {carrier} rows; "
-                                    "open Google Chrome, complete "
-                                    f"{system_chrome_settings(carrier)['challenge_name']}, "
-                                    "and retry."
+                                    f"Skipped remaining {carrier} rows after Chrome initialization failed: {exc}"
                                 ),
                             ),
                         )

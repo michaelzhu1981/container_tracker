@@ -19,7 +19,7 @@
 | `COSU` | COSCO | 已实现；默认无头。解析 SCCT 动态节点表 |
 | `ZIMU` | ZIM | 已实现；用本机普通 Chrome 过 hCaptcha 后批量查箱。只走 Track a Shipment 表单，不用箱号深链 |
 
-每家船公司共用一个持久 Chrome 资料目录（`sessions/chrome_{code}/`）。系统已装 Google Chrome 时优先用它，否则退回 Playwright Chromium。HLCU 更容易碰到 Cloudflare；MSCU / MAEU / CMDU / OOLU / ZIMU / HDMU 无头更容易被拦，因此这些家默认 headed。
+Playwright 查询使用各船公司的持久资料目录（`sessions/chrome_{code}/`），优先使用系统 Google Chrome，不可用时退回 Playwright Chromium。HLCU / CMDU / OOLU / ZIMU / HDMU 的原生查询使用普通 Chrome 已有的登录和验证状态，并为每家创建独立查询窗口；操作绑定进程、窗口和页签 ID，排除并行运行的 Playwright 实例。OOLU 结果页跳转后仍跟随原页签，结束时只关闭该次查询的窗口。MSCU / MAEU 及原生查询船公司默认 headed。
 
 ## 安装
 
@@ -108,7 +108,7 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 ## 结果
 
-结果写入 `output/containers_result.xlsx`，默认每完成 5 箱或每 10 秒批量保存一次，停止或结束任务时强制保存。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。HLCU / CMDU / OOLU / ZIMU 都拍本机 Chrome 真实窗口，不再用手动画页面。完整 HTML 在 `logs/html/`。
+结果写入 `output/containers_result.xlsx`，默认每完成 5 箱或每 10 秒批量保存一次，停止或结束任务时强制保存。若该文件正被 Excel 打开，会改写带时间戳的副本。`screenshots/` 只保存箱号查询结果（事件表），不含登录、Cookie 横幅或 Cloudflare 页。HLCU / CMDU / OOLU / ZIMU 优先截取本机 Chrome 真实窗口；后台服务没有 macOS 屏幕录制权限时，改由当前绑定页签生成结果内容截图。完整 HTML 在 `logs/html/`。
 
 输出列：`Container` `Carrier` `POL` `Status` `Loaded` `Sailed` `Vessel` `Voyage` `ATD` `Latest Event` `Checked At` `Check Result` `Error Code` `Error` `Screenshot`。
 
@@ -122,7 +122,9 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港不算开船；Planned / ETD 不算。
 
-常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
+常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `BROWSER_PERMISSION` `BROWSER_CLOSED` `TAB_NOT_FOUND` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
+
+`BROWSER_PERMISSION` 表示 Chrome 或 macOS 明确拒绝自动化访问；若提示 JavaScript 未开启，在普通 Chrome 的 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript** 中开启，页面会显示等待及操作说明。关闭 Wait for challenge 时直接报告错误。窗口关闭和页签丢失分别报告 `BROWSER_CLOSED` / `TAB_NOT_FOUND`，不会误报 CAPTCHA 或等待 10 分钟。
 
 同一家连续两箱出现 `CLOUDFLARE` / `CAPTCHA` / `SELECTOR` 时，停查该家剩余行，其他船公司继续。
 

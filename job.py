@@ -282,7 +282,9 @@ class JobManager:
                 code = current_challenge["code"]
                 mode = current_challenge.get("mode")
                 seconds = current_challenge.get("timeout_seconds", 0)
-                if mode == "current_browser":
+                if mode == "browser_permission":
+                    action = "In Chrome: View → Developer → Allow JavaScript from Apple Events. Keep the tracking window open."
+                elif mode == "current_browser":
                     wait_label = (
                         f"up to {seconds // 60} min"
                         if seconds >= 60
