@@ -26,7 +26,10 @@ def test_parse_loaded_latest_event():
     assert events[0].event_date == "2026-09-10"
     assert events[0].vessel == "EVER LASTING"
     assert events[0].voyage == "0018-095E"
-    assert result.status == "LOADED_WAITING_DEPARTURE"
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.atd == "2026-09-10"
     assert result.pol == "SHANGHAI"
 
 

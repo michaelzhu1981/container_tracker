@@ -116,7 +116,7 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 | Status | 含义 |
 |---|---|
-| `SAILED` | 已装上海船且已开船。ATD 取本程第一次海船离港；YMJA 的 Actual On Board 也算已开船 |
+| `SAILED` | 已装上海船且已开船。ATD 取本程第一次海船离港；YMJA 的 Actual On Board，以及 EGLV 的 `Loaded (FCL) on vessel`，也算已开船并使用该事件时间作为 ATD |
 | `LOADED_WAITING_DEPARTURE` | 已装海船，尚未离港 |
 | `NOT_LOADED` | 尚未装上海船 |
 | `MANUAL_CHECK_REQUIRED` | 需要人工看页面（如 CAPTCHA、航次切不开） |
@@ -124,7 +124,7 @@ python app.py input/containers.xlsx --output output/today.xlsx
 
 Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港不算开船；Planned / ETD 不算。
 
-EGLV 的免登录箱号查询只提供最新一条动态：若最新状态本身是装船或离港，可判断 `LOADED_WAITING_DEPARTURE` / `SAILED`；若已卸船、提货或还空，官网没有同时返回本航次历史，结果只反映当前箱态，不补造不可见的 POL、船名、航次或 ATD。
+EGLV 的免登录箱号查询只提供最新一条动态：`Loaded (FCL) on vessel` 按已开船处理，ATD 使用该事件时间；其他装船或离港状态分别判断 `LOADED_WAITING_DEPARTURE` / `SAILED`。若已卸船、提货或还空，官网没有同时返回本航次历史，结果只反映当前箱态，不补造不可见的 POL、船名、航次或 ATD。
 
 常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `BROWSER_PERMISSION` `BROWSER_CLOSED` `TAB_NOT_FOUND` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
 

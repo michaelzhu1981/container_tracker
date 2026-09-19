@@ -71,6 +71,11 @@ def is_laden_ocean(event: CanonicalEvent) -> bool:
     return True
 
 
+def _is_evergreen_loaded_fcl_on_vessel(event: CanonicalEvent) -> bool:
+    compact = "".join(event.raw_text.lower().split())
+    return "loaded(fcl)onvessel" in compact
+
+
 def _latest(events: Iterable[CanonicalEvent], timeline_order: TimelineOrder) -> CanonicalEvent | None:
     dated = list(events)
     if not dated:
@@ -366,6 +371,11 @@ def evaluate(
         on_board = None
         if carrier == "YMJA":
             on_board = _earliest([e for e in load if is_on_board(e)], timeline_order)
+        elif carrier == "EGLV":
+            on_board = _earliest(
+                [e for e in load if _is_evergreen_loaded_fcl_on_vessel(e)],
+                timeline_order,
+            )
         if first_load and implies_sailed_without_departure(journey, first_load, timeline_order):
             result.sailed = True
             status = "SAILED"
