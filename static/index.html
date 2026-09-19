@@ -435,6 +435,29 @@
     let lastCarrierFilter = "";
     let lastCurrent = "";
     let dashSort = { key: "carrier", direction: "asc" };
+    let deferredRenderData = null;
+    let deferredRenderTimer = null;
+    let pointerIsDown = false;
+
+    function hasTextSelection() {
+      const selection = window.getSelection();
+      return Boolean(selection && selection.rangeCount && !selection.isCollapsed);
+    }
+
+    function shouldDeferRender() {
+      return pointerIsDown || hasTextSelection();
+    }
+
+    function flushDeferredRender() {
+      if (!deferredRenderData || shouldDeferRender() || deferredRenderTimer != null) return;
+      deferredRenderTimer = window.setTimeout(() => {
+        deferredRenderTimer = null;
+        if (!deferredRenderData || shouldDeferRender()) return;
+        const data = deferredRenderData;
+        deferredRenderData = null;
+        render(data);
+      }, 0);
+    }
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -640,6 +663,11 @@
     }
 
     function render(data) {
+      if (shouldDeferRender()) {
+        deferredRenderData = data;
+        return;
+      }
+      deferredRenderData = null;
       const job = data.job;
       const busy = job.state === "running" || job.state === "stopping";
       stateEl.className = "badge " + job.state;
@@ -798,6 +826,7 @@
       catch (err) { messageEl.textContent = String(err.message || err); }
     });
     dashRowsEl.addEventListener("click", async (event) => {
+      if (hasTextSelection()) return;
       const row = event.target.closest("[data-carrier]");
       if (!row) return;
       const selected = carrierFilter === row.dataset.carrier;
@@ -909,6 +938,26 @@
       if (!el) return;
       if (event.relatedTarget && el.contains(event.relatedTarget)) return;
       hideOptTip();
+    });
+    document.addEventListener("pointerdown", () => {
+      pointerIsDown = true;
+      if (deferredRenderTimer != null) {
+        window.clearTimeout(deferredRenderTimer);
+        deferredRenderTimer = null;
+      }
+    }, true);
+    const releasePointer = () => {
+      pointerIsDown = false;
+      flushDeferredRender();
+    };
+    document.addEventListener("pointerup", releasePointer, true);
+    document.addEventListener("pointercancel", releasePointer, true);
+    document.addEventListener("selectionchange", () => {
+      if (hasTextSelection() && deferredRenderTimer != null) {
+        window.clearTimeout(deferredRenderTimer);
+        deferredRenderTimer = null;
+      }
+      flushDeferredRender();
     });
 
     refresh();
