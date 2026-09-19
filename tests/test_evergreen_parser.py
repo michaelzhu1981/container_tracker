@@ -45,8 +45,26 @@ def test_parse_empty_returned_live_shape():
     events, result = _result("empty_returned.html", "EGHU8519309")
     assert events[0].type == "GTIN"
     assert events[0].empty is True
-    assert result.status == "NOT_LOADED"
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol is None
+    assert result.atd is None
     assert result.latest_event == "SEP-12-2026 | Empty container returned | MANILA (NORTH PORT) (PH)"
+
+
+def test_parse_transship_loaded_is_sailed_without_origin_details():
+    events, result = _result("transship_loaded.html", "EGSU9773522")
+    assert events[0].type == "LOAD"
+    assert events[0].vessel == "EVER MACH"
+    assert events[0].voyage == "1472-018E"
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.vessel == "EVER MACH"
+    assert result.voyage == "1472-018E"
+    assert result.pol is None
+    assert result.atd is None
 
 
 def test_tracker_contract():

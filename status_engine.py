@@ -76,6 +76,17 @@ def _is_evergreen_loaded_fcl_on_vessel(event: CanonicalEvent) -> bool:
     return "loaded(fcl)onvessel" in compact
 
 
+def _is_evergreen_sailed_without_origin_details(event: CanonicalEvent) -> bool:
+    compact = "".join(event.raw_text.lower().split())
+    return any(
+        marker in compact
+        for marker in (
+            "transshipcontainerloadedonvessel",
+            "emptycontainerreturned",
+        )
+    )
+
+
 def _latest(events: Iterable[CanonicalEvent], timeline_order: TimelineOrder) -> CanonicalEvent | None:
     dated = list(events)
     if not dated:
@@ -317,6 +328,22 @@ def evaluate(
     )
     if forced_status:
         return _finalize(result, forced_status, error_code, error)
+
+    if carrier == "EGLV":
+        actual = [event for event in events if event.classifier == "ACT"] or events
+        latest = _latest(actual, timeline_order)
+        if latest and _is_evergreen_sailed_without_origin_details(latest):
+            result.loaded = True
+            result.sailed = True
+            result.vessel = latest.vessel
+            result.voyage = latest.voyage
+            result.latest_event = _latest_event_text(latest)
+            # The anonymous EGLV response exposes only the latest event. A
+            # transshipment load or empty return proves the ocean journey has
+            # sailed, but cannot identify its origin load port or departure time.
+            result.pol = None
+            result.atd = None
+            return _finalize(result, "SAILED", None, None)
 
     journey = select_latest_journey(
         events,
