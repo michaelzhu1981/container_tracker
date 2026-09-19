@@ -50,6 +50,8 @@ def test_tracker_contract():
     assert EvergreenTracker.carrier_code == "EGLV"
     assert EvergreenTracker.timeline_order == "newest_first"
     assert "evergreen-shipping.cn" in EvergreenTracker.tracking_url
+    assert "提单货柜信息和当前动态" in EvergreenTracker.screenshot_selectors[0]
+    assert "Current Status" in EvergreenTracker.screenshot_selectors[1]
 
 
 @pytest.mark.asyncio

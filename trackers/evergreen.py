@@ -119,7 +119,10 @@ class EvergreenTracker(BaseTracker):
     carrier_code = "EGLV"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
-    screenshot_selectors = ("table.ec-table.ec-table-sm",)
+    screenshot_selectors = (
+        'table.ec-table.ec-table-sm:has-text("提单货柜信息和当前动态")',
+        'table.ec-table.ec-table-sm:has-text("Container(s) Information on B/L and Current Status")',
+    )
 
     async def open_page(self) -> None:
         await self.open_tracking_or_reuse("evergreen-shipping.cn")
