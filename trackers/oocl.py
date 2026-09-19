@@ -21,6 +21,7 @@ from event_text import (
 from html_tables import parse_tables
 from models import CanonicalEvent
 from ports import normalize_key
+from status_engine import evaluate
 from trackers.base import COOKIE_BANNER_WAIT_MS, BaseTracker, TrackerError, looks_like_no_result
 
 LOGGER = logging.getLogger("container_tracker")
@@ -99,7 +100,7 @@ _CLICK_VIEW_DETAILS_JS = """() => {
         + " "
         + (el.value || "")
     ).toLowerCase().replace(/\\s+/g, " ").trim();
-    const isHide = (s) => /hide details|close details|less details|收起详情/.test(s);
+    const isHide = (s) => /hide details|close details|less details|collapse|收起详情/.test(s);
     const isView = (s) => (
         /(^|\\b)(view|show|display) details?\\b/.test(s)
         || s.includes("查看详情")
@@ -409,7 +410,11 @@ def _looks_like_detail_data_row(row: list[dict]) -> bool:
 
 
 def _events_from_mapped_rows(
-    rows: list[list[dict]], mapping: dict[str, int], start: int = 0
+    rows: list[list[dict]],
+    mapping: dict[str, int],
+    start: int = 0,
+    *,
+    oocl_summary: bool = False,
 ) -> list[CanonicalEvent]:
     events: list[CanonicalEvent] = []
     for row in rows:
@@ -421,8 +426,19 @@ def _events_from_mapped_rows(
             )
             if part
         )
+        status = _cell_text(row, mapping.get("status"))
+        # OOCL's summary table omits the transport columns that exist in the
+        # expanded drawer. In OOCL terminology these four summary movements
+        # are vessel events; truck movements are labelled Gate In/Gate Out.
+        # Preserve that carrier-specific meaning when the drawer is slow.
+        if (
+            oocl_summary
+            and not transport
+            and classify_event_type(status) in {"LOAD", "DEPA", "ARRI", "DISC"}
+        ):
+            transport = "Ocean Vessel"
         event = _event_from_fields(
-            status=_cell_text(row, mapping.get("status")),
+            status=status,
             date_text=_cell_text(row, mapping.get("date")),
             location=_cell_text(row, mapping.get("location")),
             transport=transport,
@@ -451,7 +467,11 @@ def _parse_oocl_tables(html: str) -> list[CanonicalEvent]:
         if _is_summary_headers(headers):
             mapping = _header_index(headers)
             if "status" in mapping and "date" in mapping and len(table) > 1:
-                summary.extend(_events_from_mapped_rows(table[1:], mapping, len(summary)))
+                summary.extend(
+                    _events_from_mapped_rows(
+                        table[1:], mapping, len(summary), oocl_summary=True
+                    )
+                )
             pending = None
             continue
         mapping = _header_index(headers)
@@ -539,6 +559,19 @@ def parse_oocl_html(html: str) -> list[CanonicalEvent]:
         if events:
             return events
     return []
+
+
+def _prefer_expanded_events(
+    original: list[CanonicalEvent], expanded: list[CanonicalEvent]
+) -> list[CanonicalEvent]:
+    """Prefer the post-screenshot drawer when it adds movement detail."""
+    if len(expanded) > len(original):
+        return expanded
+    original_types = {event.type for event in original}
+    expanded_types = {event.type for event in expanded}
+    if "LOAD" not in original_types and "LOAD" in expanded_types:
+        return expanded
+    return original
 
 
 class OoclTracker(BaseTracker):
@@ -743,8 +776,9 @@ class OoclTracker(BaseTracker):
                 self._details_expanded = True
                 return
             await self._sleep(200)
-        self._details_expanded = True
-        LOGGER.info("OOCL View Details stayed collapsed; status and screenshot may lack events.")
+        # Do not cache a failed/slow expansion. parse_events() and screenshot
+        # preparation can retry once the asynchronous drawer has finished.
+        LOGGER.info("OOCL View Details is not ready yet; it will be retried.")
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -960,12 +994,44 @@ class OoclTracker(BaseTracker):
         if entry is not None and not _page_is_closed(entry):
             self.page = entry
 
+    async def save_artifacts(self, container: str, *, allow_screenshot: bool = True) -> None:
+        await super().save_artifacts(container, allow_screenshot=allow_screenshot)
+        if self._html is None or not self._html.is_file():
+            return
+        # BaseTracker saves HTML before preparing the screenshot. OOCL can
+        # finish opening its asynchronous details drawer during that prepare
+        # step, so persist the final DOM that actually produced the image.
+        try:
+            expanded_html = await self.page.content()
+            self._html.write_text(expanded_html, encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            LOGGER.info("Could not refresh OOCL HTML after expanding its screenshot.")
+
     async def track(self, container: str, *, session_ready: bool = False):
         self._entry_page = self.page
         self._result_urls = []
         self._details_expanded = False
         try:
-            return await super().track(container, session_ready=session_ready)
+            result = await super().track(container, session_ready=session_ready)
+            if result.success and self._html is not None and self._html.is_file():
+                try:
+                    expanded = parse_oocl_html(
+                        self._html.read_text(encoding="utf-8", errors="replace")
+                    )
+                except OSError:
+                    expanded = []
+                events = _prefer_expanded_events(result.events, expanded)
+                if events is not result.events:
+                    result = evaluate(
+                        events,
+                        container=container,
+                        carrier=self.carrier_code,
+                        timeline_order=self.timeline_order,
+                        checked_at=result.checked_at,
+                        screenshot_path=result.screenshot_path,
+                        html_path=result.html_path,
+                    )
+            return result
         finally:
             await self._return_to_entry()
 

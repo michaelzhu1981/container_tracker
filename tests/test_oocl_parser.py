@@ -13,6 +13,7 @@ from trackers.oocl import (
     _SUBMIT_SEARCH_JS,
     _VIEW_DETAILS_SELECTORS,
     _VISIBLE_EVENT_COUNT_JS,
+    _prefer_expanded_events,
     is_oocl_entry_url,
     is_oocl_site_error_page,
     oocl_popup_url,
@@ -71,6 +72,44 @@ def test_parse_control_tower_details_uses_haiphong_departure():
     assert result.pol == "HAI PHONG"
     assert result.atd == "2026-08-13 05:18"
     assert result.sailed is True
+
+
+def test_summary_departure_is_ocean_fallback_when_details_are_slow():
+    html = (FIXTURES / "summary_departure.html").read_text(encoding="utf-8")
+    events = parse_oocl_html(html)
+    assert len(events) == 1
+    assert events[0].type == "DEPA"
+    assert events[0].transport_mode == "MOTHER"
+    result = evaluate(
+        events,
+        container="TGBU5255226",
+        carrier="OOLU",
+        timeline_order="newest_first",
+        checked_at="2026-09-15 20:33:00",
+    )
+    assert result.status == "SAILED"
+    assert result.sailed is True
+    assert result.atd == "2026-08-29 01:10"
+
+
+def test_expanded_drawer_replaces_summary_and_restores_pol():
+    summary = parse_oocl_html(
+        (FIXTURES / "summary_departure.html").read_text(encoding="utf-8")
+    )
+    expanded = parse_oocl_html(
+        (FIXTURES / "control_tower_sailed.html").read_text(encoding="utf-8")
+    )
+    chosen = _prefer_expanded_events(summary, expanded)
+    assert chosen is expanded
+    result = evaluate(
+        chosen,
+        container="TGBU5255226",
+        carrier="OOLU",
+        timeline_order="newest_first",
+        checked_at="2026-09-19 20:27:23",
+    )
+    assert result.status == "SAILED"
+    assert result.pol == "HAI PHONG"
 
 
 def test_parse_on_board_waiting():
@@ -304,7 +343,7 @@ async def test_view_details_wait_is_bounded_to_three_seconds(monkeypatch):
     tracker._click_view_details = clicked
     tracker._sleep = sleep
     await tracker.expand_result_details()
-    assert tracker._details_expanded is True
+    assert tracker._details_expanded is False
     assert sleeps == [200] * 15
 
 
