@@ -28,12 +28,14 @@ def test_cmdu_unlocks_in_current_browser():
     assert unlocks_in_current_browser("ZIMU") is True
     assert unlocks_in_current_browser("HDMU") is True
     assert unlocks_in_current_browser("COSU") is False
+    assert unlocks_in_current_browser("EGLV") is False
     assert uses_system_chrome("CMDU") is True
     assert uses_system_chrome("HDMU") is True
     assert uses_system_chrome("OOLU") is True
     assert uses_system_chrome("ZIMU") is True
     assert uses_system_chrome("MAEU") is False
     assert uses_system_chrome("HLCU") is True
+    assert uses_system_chrome("EGLV") is False
     hlcu = system_chrome_settings("HLCU")
     assert hlcu["host"] == "hapag-lloyd.com"
     assert hlcu["challenge_name"] == "Cloudflare"
@@ -91,6 +93,7 @@ def test_challenge_carrier_defaults():
     assert default_headed_for("YMJA", False) is False
     assert default_headed_for("HDMU", False) is True
     assert default_headed_for("COSU", False) is False
+    assert default_headed_for("EGLV", False) is False
     assert default_headed_for("YMJA", True) is True
     assert chrome_profile_dir("HLCU").name == "chrome_hlcu"
     hlcu_lo, hlcu_hi = query_delay_seconds("HLCU")
@@ -101,6 +104,7 @@ def test_challenge_carrier_defaults():
     zimu_lo, zimu_hi = query_delay_seconds("ZIMU")
     hdmu_lo, hdmu_hi = query_delay_seconds("HDMU")
     cosu_lo, cosu_hi = query_delay_seconds("COSU")
+    eglv_lo, eglv_hi = query_delay_seconds("EGLV")
     ymja_lo, ymja_hi = query_delay_seconds("YMJA")
     oney_lo, oney_hi = query_delay_seconds("ONEY")
     assert hlcu_lo >= 5
@@ -113,6 +117,7 @@ def test_challenge_carrier_defaults():
     assert ymja_hi <= 4
     assert oney_hi <= 4
     assert cosu_hi <= 4
+    assert eglv_hi <= 4
 
 
 def test_cli_no_wait_challenge_flag():
@@ -327,6 +332,10 @@ def test_carrier_schedule_lanes_overlap_headless_and_headed():
     assert carrier_schedule_lanes(["HDMU", "COSU", "OOLU", "ZIMU"]) == (
         ["COSU"],
         ["OOLU", "HDMU", "ZIMU"],
+    )
+    assert carrier_schedule_lanes(["EGLV", "COSU", "HLCU"]) == (
+        ["COSU", "EGLV"],
+        ["HLCU"],
     )
 
 

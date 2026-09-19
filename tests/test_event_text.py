@@ -47,3 +47,5 @@ def test_parse_one_and_msc_dates():
     assert (day, time) == ("2026-09-10", "18:20")
     _, day, time = parse_timestamp("11 Sep 2026, 03:40")
     assert (day, time) == ("2026-09-11", "03:40")
+    _, day, time = parse_timestamp("SEP-12-2026")
+    assert (day, time) == ("2026-09-12", None)

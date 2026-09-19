@@ -17,6 +17,7 @@
 | `OOLU` | OOCL | 已实现；用本机普通 Chrome 过人机验证。每箱会新开结果页签，查完关掉后回到入口页再查下一箱 |
 | `HDMU` | HMM | 已实现；用本机普通 Chrome 过 Access Denied / abnormal connection 后批量查箱。箱号前缀可以不是 HDMU，Carrier 仍填 `HDMU` |
 | `COSU` | COSCO | 已实现；默认无头。解析 SCCT 动态节点表 |
+| `EGLV` | Evergreen / 长荣海运 | 已实现；默认无头。使用长荣中国 ShipmentLink 按箱号查询；匿名查询只返回最新一条货柜动态 |
 | `ZIMU` | ZIM | 已实现；用本机普通 Chrome 过 hCaptcha 后批量查箱。只走 Track a Shipment 表单，不用箱号深链 |
 
 Playwright 查询使用各船公司的持久资料目录（`sessions/chrome_{code}/`），优先使用系统 Google Chrome，不可用时退回 Playwright Chromium。HLCU / CMDU / OOLU / ZIMU / HDMU 的原生查询使用普通 Chrome 已有的登录和验证状态，并为每家创建独立查询窗口；操作绑定进程、窗口和页签 ID，排除并行运行的 Playwright 实例。OOLU 结果页跳转后仍跟随原页签，结束时只关闭该次查询的窗口。MSCU / MAEU 及原生查询船公司默认 headed。
@@ -32,11 +33,11 @@ playwright install chromium
 
 ## 输入
 
-编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU` / `OOLU` / `HDMU` / `COSU` / `ZIMU`。不要填写 POL，程序从最近一程海船装船港推断。Carrier 以本列为准，不用箱号前缀猜船公司（例如 HMM 箱号可以是 `DFSU...`，Carrier 仍填 `HDMU`）。
+编辑 `input/containers.xlsx`：把箱号贴到 `Container` 列第 2 行起，在 `Carrier` 列填写 `HLCU` / `YMJA` / `ONEY` / `MAEU` / `MSCU` / `CMDU` / `OOLU` / `HDMU` / `COSU` / `EGLV` / `ZIMU`。不要填写 POL，程序从最近一程海船装船港推断。Carrier 以本列为准，不用箱号前缀猜船公司（例如 HMM 箱号可以是 `DFSU...`，Carrier 仍填 `HDMU`）。
 
 也接受表头别名，例如 `箱号` / `集装箱号` / `船公司` / `SCAC`。多余列会原样带到结果表。
 
-读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` / `COSU` 若在输入中则并行（默认可无头），同时有头船公司按 `OOLU` → `MSCU` → `MAEU` → `HLCU` → `CMDU` → `HDMU` → `ZIMU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
+读入时按 `Container+Carrier` 去重（保留首行），再按船公司分组。`ONEY` / `YMJA` / `COSU` / `EGLV` 若在输入中则并行（默认可无头），同时有头船公司按 `OOLU` → `MSCU` → `MAEU` → `HLCU` → `CMDU` → `HDMU` → `ZIMU` 串行，互不阻塞。每家使用一个独立 worker 并按顺序逐箱查询；箱号会去掉空格和连字符并转大写，校验位不对仍会查询，只打日志警告。
 
 ## 本地网页控制台
 
@@ -68,7 +69,7 @@ python app.py --serve
 
 ## 命令行
 
-单箱（10 家均已实现）：
+单箱（11 家均已实现）：
 
 ```bash
 python app.py --carrier HLCU --container HLXU1234567
@@ -80,6 +81,7 @@ python app.py --carrier CMDU --container CMAU1234567
 python app.py --carrier OOLU --container OOLU6895702
 python app.py --carrier HDMU --container DFSU7369437
 python app.py --carrier COSU --container CSNU6609294
+python app.py --carrier EGLV --container EGHU8519309
 python app.py --carrier ZIMU --container TCNU3698035
 python app.py --carrier HLCU --container HLXU1234567 --headed
 ```
@@ -121,6 +123,8 @@ python app.py input/containers.xlsx --output output/today.xlsx
 | `CHECK_FAILED` | 查询失败 |
 
 Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港不算开船；Planned / ETD 不算。
+
+EGLV 的免登录箱号查询只提供最新一条动态：若最新状态本身是装船或离港，可判断 `LOADED_WAITING_DEPARTURE` / `SAILED`；若已卸船、提货或还空，官网没有同时返回本航次历史，结果只反映当前箱态，不补造不可见的 POL、船名、航次或 ATD。
 
 常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `BROWSER_PERMISSION` `BROWSER_CLOSED` `TAB_NOT_FOUND` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
 

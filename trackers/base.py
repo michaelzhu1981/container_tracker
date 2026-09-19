@@ -146,6 +146,7 @@ _NO_RESULT_TOKENS = (
     "invalid container no",
     "unrecognized page request",
     "page request is unrecognized",
+    "没有找到您要查询的货柜信息",
 )
 
 _QUERY_PAGE_MARKERS = (
@@ -180,6 +181,8 @@ _QUERY_PAGE_MARKERS = (
     "tracing-result-wrapper",
     "card-container-activity",
     "last activity",
+    "提单货柜信息和当前动态",
+    "container(s) information on b/l and current status",
 )
 
 

@@ -1,5 +1,6 @@
 from trackers.cma import CmaTracker
 from trackers.cosco import CoscoTracker
+from trackers.evergreen import EvergreenTracker
 from trackers.hapag import HapagTracker
 from trackers.hmm import HmmTracker
 from trackers.maersk import MaerskTracker
@@ -12,6 +13,7 @@ from trackers.zim import ZimTracker
 TRACKERS = {
     "CMDU": CmaTracker,
     "COSU": CoscoTracker,
+    "EGLV": EvergreenTracker,
     "HDMU": HmmTracker,
     "HLCU": HapagTracker,
     "MAEU": MaerskTracker,

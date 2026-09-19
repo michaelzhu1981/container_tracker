@@ -100,6 +100,7 @@ def test_create_input_template(tmp_path: Path):
     assert rows == []
     instructions = workbook["Instructions"]
     assert "python app.py input/containers.xlsx" in str(instructions["A3"].value)
+    assert "EGLV" in str(instructions["A2"].value)
     assert "ONEY, OOLU, YMJA, or ZIMU" in str(instructions["A2"].value)
 
 

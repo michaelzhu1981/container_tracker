@@ -97,6 +97,7 @@ def test_one_i18n_bundle_is_not_treated_as_no_result():
     assert looks_like_no_result("Can't identify your input")
     assert looks_like_no_result("Container No. is invalid")
     assert looks_like_no_result("Your page request is unrecognized")
+    assert looks_like_no_result("没有找到您要查询的货柜信息，请输入正确的柜号。")
 
 
 def test_cma_provisional_moves_disclaimer_is_not_no_result():

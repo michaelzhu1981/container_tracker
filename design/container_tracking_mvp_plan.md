@@ -74,6 +74,7 @@
 | OOLU | OOCL |
 | HDMU | HMM |
 | COSU | COSCO Shipping Lines |
+| EGLV | Evergreen Line |
 | ZIMU | ZIM |
 
 推荐顺序：HLCU → YMJA → ONEY → MAEU → MSCU → CMDU。若 HLCU 因 Cloudflare 无法在 V0.1 跑通，改先做 YMJA / ONEY，不要卡死在第一家。
@@ -116,6 +117,7 @@ TRACKERS = {
     "OOLU": OoclTracker,
     "HDMU": HmmTracker,
     "COSU": CoscoTracker,
+    "EGLV": EvergreenTracker,
     "ZIMU": ZimTracker,
 }
 
@@ -338,7 +340,7 @@ MVP 只产出 Excel + 终端，不产出 JSON/CSV。截图/HTML 是旁路文件�
   - 无 `POL` 列；不放示例箱号
 - Sheet 2 `Instructions`（英文，程序忽略）
   - Paste container numbers into column A starting at row 2
-  - Type a Carrier code in column B for each row: HLCU, YMJA, ONEY, MAEU, MSCU, CMDU, OOLU, HDMU, COSU, or ZIMU
+  - Type a Carrier code in column B for each row: HLCU, YMJA, ONEY, MAEU, MSCU, CMDU, OOLU, HDMU, COSU, EGLV, or ZIMU
   - Save this file, then run: `python app.py input/containers.xlsx`
 
 不另做 `containers.sample.xlsx`。
@@ -354,7 +356,7 @@ MVP 只产出 Excel + 终端，不产出 JSON/CSV。截图/HTML 是旁路文件�
 
 **没有输入 POL 列。** 若多了一列 `POL`，透传时改名为 `POL_input`，不得覆盖输出推断的 `POL`。
 
-Carrier 枚举：`HLCU` | `YMJA` | `ONEY` | `MAEU` | `MSCU` | `CMDU` | `OOLU` | `HDMU` | `COSU` | `ZIMU`
+Carrier 枚举：`HLCU` | `YMJA` | `ONEY` | `MAEU` | `MSCU` | `CMDU` | `OOLU` | `HDMU` | `COSU` | `EGLV` | `ZIMU`
 
 表头 alias（只用于读入）：
 
@@ -615,6 +617,7 @@ container_tracker/
 | OOLU | [OOCL cargo tracking](https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx) | CAPTCHA、可能弹窗到 ExpressLink；`newest_first` |
 | HDMU | [HMM Track & Trace](https://www.hmm21.com/e-service/general/trackNTrace/TrackNTrace.do) | 历史默认折叠 Previous Moves，解析隐藏行；`newest_first` |
 | COSU | [COSCO cargo tracking](https://elines.coscoshipping.com/ebusiness/cargoTracking) | SCCT SPA，接口正文加密，解析页面动态节点；`newest_first` |
+| EGLV | [Evergreen China cargo tracking](https://www.evergreen-shipping.cn/servlet/TDB1_CargoTracking.do) | 匿名箱号查询只返回最新动态，不提供完整 moves 历史；`newest_first` |
 | ZIMU | [ZIM Track a Shipment](https://www.zim.com/tools/track-a-shipment) | hCaptcha；活动字段 `activityDesc` / `activityDateTz`；`newest_first` |
 
 ### 8.1 HLCU 研究步骤（V0.1）
