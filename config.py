@@ -21,20 +21,6 @@ MANUAL_CHROME_WAIT_SECONDS = 600
 CURRENT_BROWSER_WAIT_MS = MANUAL_CHROME_WAIT_SECONDS * 1000
 MANUAL_CHROME_APPEAR_SECONDS = 30
 CHALLENGE_RETRY_DELAYS = (5.0, 15.0)
-CHALLENGE_CARRIERS = ("HLCU", "MSCU", "MAEU", "CMDU", "OOLU", "ZIMU", "HDMU")
-HEADLESS_PARALLEL_CARRIERS = ("ONEY", "YMJA", "COSU", "EGLV")
-HEADED_SERIAL_CARRIERS = ("OOLU", "MSCU", "MAEU", "HLCU", "CMDU", "HDMU", "ZIMU")
-CIRCUIT_BREAK_CODES = frozenset({"CLOUDFLARE", "CAPTCHA", "SELECTOR"})
-CIRCUIT_BREAK_STREAK = 2
-
-INPUT_XLSX = ROOT / "input" / "containers.xlsx"
-OUTPUT_XLSX = ROOT / "output" / "containers_result.xlsx"
-SCREENSHOT_DIR = ROOT / "screenshots"
-HTML_DIR = ROOT / "logs" / "html"
-LOG_DIR = ROOT / "logs"
-SESSION_DIR = ROOT / "sessions"
-PORTS_YAML = ROOT / "data" / "ports.yaml"
-
 SUPPORTED_CARRIERS = (
     "CMDU",
     "COSU",
@@ -48,6 +34,21 @@ SUPPORTED_CARRIERS = (
     "YMJA",
     "ZIMU",
 )
+CHALLENGE_CARRIERS = ("HLCU", "MSCU", "MAEU", "CMDU", "OOLU", "ZIMU", "HDMU")
+HEADLESS_PARALLEL_CARRIERS = tuple(
+    carrier for carrier in SUPPORTED_CARRIERS if carrier not in CHALLENGE_CARRIERS
+)
+HEADED_SERIAL_CARRIERS = ("OOLU", "MSCU", "MAEU", "HLCU", "CMDU", "HDMU", "ZIMU")
+CIRCUIT_BREAK_CODES = frozenset({"CLOUDFLARE", "CAPTCHA", "SELECTOR"})
+CIRCUIT_BREAK_STREAK = 2
+
+INPUT_XLSX = ROOT / "input" / "containers.xlsx"
+OUTPUT_XLSX = ROOT / "output" / "containers_result.xlsx"
+SCREENSHOT_DIR = ROOT / "screenshots"
+HTML_DIR = ROOT / "logs" / "html"
+LOG_DIR = ROOT / "logs"
+SESSION_DIR = ROOT / "sessions"
+PORTS_YAML = ROOT / "data" / "ports.yaml"
 
 CARRIER_TIMEOUT_MS = {
     "HLCU": 45_000,
