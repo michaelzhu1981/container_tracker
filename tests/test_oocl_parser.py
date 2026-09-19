@@ -112,6 +112,22 @@ def test_expanded_drawer_replaces_summary_and_restores_pol():
     assert result.pol == "HAI PHONG"
 
 
+def test_arrived_and_empty_returned_container_keeps_sailed_result():
+    html = (FIXTURES / "arrived_empty_return.html").read_text(encoding="utf-8")
+    events = parse_oocl_html(html)
+    result = evaluate(
+        events,
+        container="OOCU7131235",
+        carrier="OOLU",
+        timeline_order="newest_first",
+        checked_at="2026-09-19 20:33:21",
+    )
+    assert result.status == "SAILED"
+    assert result.pol == "HAI PHONG"
+    assert result.atd == "2026-07-18 11:09"
+    assert "Empty Return" in (result.latest_event or "")
+
+
 def test_parse_on_board_waiting():
     html = (FIXTURES / "on_board_waiting.html").read_text(encoding="utf-8")
     events = parse_oocl_html(html)

@@ -189,7 +189,10 @@ def _is_single_gap_cluster(
 
 
 def _apply_empty_return_split(
-    events: list[CanonicalEvent], timeline_order: TimelineOrder
+    events: list[CanonicalEvent],
+    timeline_order: TimelineOrder,
+    *,
+    preserve_completed: bool = False,
 ) -> list[CanonicalEvent]:
     boundaries = [e for e in events if is_empty_return(e)]
     if not boundaries:
@@ -198,18 +201,44 @@ def _apply_empty_return_split(
     if last is None:
         return events
     after = [e for e in events if is_later(e, last, timeline_order)]
-    return after
+    if after:
+        # A later event means the returned box has started another cycle.
+        return after
+    if not preserve_completed:
+        return []
+
+    # OOCL keeps the completed shipment in the same result drawer after empty
+    # return. If no newer cycle has begun, retain that voyage so Loaded, Sailed,
+    # POL and ATD describe the shipment rather than the box's current emptiness.
+    before = [e for e in events if e is not last and not is_later(e, last, timeline_order)]
+    ocean = [e for e in before if is_laden_ocean(e)]
+    if any(event.type == "DEPA" for event in ocean):
+        return events
+    loads = [event for event in ocean if event.type == "LOAD"]
+    if any(
+        implies_sailed_without_departure(before, load, timeline_order)
+        for load in loads
+    ):
+        return events
+    return []
 
 
 def select_latest_journey(
-    events: list[CanonicalEvent], timeline_order: TimelineOrder = "oldest_first"
+    events: list[CanonicalEvent],
+    timeline_order: TimelineOrder = "oldest_first",
+    *,
+    preserve_completed_after_return: bool = False,
 ) -> list[CanonicalEvent] | None:
     if not events:
         return []
     act = [e for e in events if e.classifier == "ACT"]
     pool = act or events
     if any(is_empty_return(e) for e in pool):
-        pool = _apply_empty_return_split(pool, timeline_order)
+        pool = _apply_empty_return_split(
+            pool,
+            timeline_order,
+            preserve_completed=preserve_completed_after_return,
+        )
         if not pool:
             return []
 
@@ -238,7 +267,11 @@ def select_latest_journey(
             return None
         grouped = _cluster_by_gap(pool, timeline_order)
 
-    return _apply_empty_return_split(grouped, timeline_order)
+    return _apply_empty_return_split(
+        grouped,
+        timeline_order,
+        preserve_completed=preserve_completed_after_return,
+    )
 
 
 def _latest_event_text(event: CanonicalEvent) -> str:
@@ -280,7 +313,11 @@ def evaluate(
     if forced_status:
         return _finalize(result, forced_status, error_code, error)
 
-    journey = select_latest_journey(events, timeline_order)
+    journey = select_latest_journey(
+        events,
+        timeline_order,
+        preserve_completed_after_return=carrier == "OOLU",
+    )
     if journey is None:
         return _finalize(
             result,

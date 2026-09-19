@@ -339,7 +339,7 @@ def test_reuse_gap_keeps_latest_cycle():
     assert result.pol == "YANTIAN"
 
 
-def test_empty_return_splits_before_voyage_grouping():
+def test_oocl_empty_return_keeps_completed_voyage_until_a_new_cycle_starts():
     events = [
         ev(
             type="LOAD",
@@ -374,13 +374,14 @@ def test_empty_return_splits_before_voyage_grouping():
     result = evaluate(
         events,
         container="YMMU6826189",
-        carrier="YMJA",
+        carrier="OOLU",
         timeline_order="newest_first",
         checked_at="2026-09-13 00:00:00",
     )
-    assert result.status == "NOT_LOADED"
-    assert result.loaded is False
-    assert result.sailed is False
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol == "SHANGHAI"
 
 
 def test_empty_return_starts_new_cycle():
