@@ -61,6 +61,34 @@ def test_parse_empty_returned_is_not_loaded():
     assert result.sailed is False
 
 
+def test_completed_hmm_journey_stays_sailed_after_empty_return():
+    html = """
+    <table>
+      <tr><th>Date</th><th>Time</th><th>Location</th><th>Status Description</th><th>Mode</th></tr>
+      <tr><td>2026-09-05</td><td>11:50</td><td>LOS ANGELES, CA</td><td>Import Empty Container Returned</td><td>Truck</td></tr>
+      <tr><td>2026-09-02</td><td>08:50</td><td>LOS ANGELES, CA</td><td>Vessel Discharged at POD</td><td>HMM JAKARTA 0145E</td></tr>
+      <tr><td>2026-08-15</td><td>17:12</td><td>HAI PHONG, VIETNAM</td><td>Vessel Departure from POL</td><td>HMM JAKARTA 0145E</td></tr>
+      <tr><td>2026-08-15</td><td>04:05</td><td>HAI PHONG, VIETNAM</td><td>Vessel Loading at POL</td><td>HMM JAKARTA 0145E</td></tr>
+      <tr><td>2026-08-10</td><td>06:50</td><td>HAI PHONG, VIETNAM</td><td>Export Empty Container Released</td><td>Truck</td></tr>
+    </table>
+    """
+    events = parse_hmm_html(html)
+    result = evaluate(
+        events,
+        container="TGBU6339574",
+        carrier="HDMU",
+        timeline_order="newest_first",
+        checked_at="2026-09-20 00:00:00",
+    )
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol == "HAI PHONG"
+    assert result.atd == "2026-08-15 17:12"
+    assert result.vessel == "HMM JAKARTA"
+    assert result.voyage == "0145E"
+
+
 @pytest.mark.asyncio
 async def test_search_reports_hmm_access_denied_as_cloudflare():
     html = """<html><head><title> Access Denied </title></head><body>

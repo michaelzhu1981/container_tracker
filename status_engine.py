@@ -352,7 +352,10 @@ def evaluate(
     journey = select_latest_journey(
         events,
         timeline_order,
-        preserve_completed_after_return=carrier == "OOLU",
+        # OOCL and HMM retain the completed shipment timeline after the
+        # consignee returns the empty box. Preserve a proven ocean departure
+        # so the shipment remains SAILED rather than becoming NOT_LOADED.
+        preserve_completed_after_return=carrier in {"OOLU", "HDMU"},
     )
     if journey is None:
         return _finalize(
