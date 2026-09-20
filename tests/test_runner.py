@@ -405,7 +405,7 @@ def _fake_playwright_browser(monkeypatch):
 def test_carrier_schedule_lanes_overlap_headless_and_headed():
     assert carrier_schedule_lanes(["CMDU", "ONEY", "HLCU", "YMJA", "MSCU", "MAEU"]) == (
         ["ONEY", "YMJA"],
-        ["MSCU", "MAEU", "HLCU", "CMDU"],
+        ["HLCU", "MSCU", "MAEU", "CMDU"],
     )
     assert carrier_schedule_lanes(["HLCU", "CMDU"]) == ([], ["HLCU", "CMDU"])
     assert carrier_schedule_lanes(["ONEY"]) == (["ONEY"], [])
@@ -421,7 +421,7 @@ def test_carrier_schedule_lanes_overlap_headless_and_headed():
         ["CMDU", "COSU", "EGLV", "HDMU", "HLCU", "MAEU", "MSCU", "ONEY", "OOLU", "YMJA", "ZIMU"]
     ) == (
         ["COSU", "EGLV", "ONEY", "YMJA"],
-        ["OOLU", "MSCU", "MAEU", "HLCU", "CMDU", "HDMU", "ZIMU"],
+        ["OOLU", "HLCU", "MSCU", "MAEU", "CMDU", "HDMU", "ZIMU"],
     )
 
 
@@ -447,7 +447,7 @@ async def test_run_batch_starts_headed_without_waiting_for_headless(
         started.append(carrier)
         max_active = max(max_active, len(active))
         snapshots.append(frozenset(active))
-        if {"COSU", "EGLV", "ONEY", "YMJA", "MSCU"} <= set(started) and not first_wave.is_set():
+        if {"COSU", "EGLV", "ONEY", "YMJA", "HLCU"} <= set(started) and not first_wave.is_set():
             first_wave.set()
         await release.wait()
         active.remove(carrier)
@@ -478,13 +478,13 @@ async def test_run_batch_starts_headed_without_waiting_for_headless(
     )
     await asyncio.wait_for(first_wave.wait(), timeout=2)
     await asyncio.sleep(0)
-    assert set(started) == {"COSU", "EGLV", "ONEY", "YMJA", "MSCU"}
+    assert set(started) == {"COSU", "EGLV", "ONEY", "YMJA", "HLCU"}
     assert max_active == 5
     release.set()
     results, _written = await asyncio.wait_for(task, timeout=2)
     assert len(results) == 8
-    assert set(started[:5]) == {"COSU", "EGLV", "ONEY", "YMJA", "MSCU"}
-    assert started[5:] == ["MAEU", "HLCU", "CMDU"]
+    assert set(started[:5]) == {"COSU", "EGLV", "ONEY", "YMJA", "HLCU"}
+    assert started[5:] == ["MSCU", "MAEU", "CMDU"]
     headed = {"MSCU", "MAEU", "HLCU", "CMDU"}
     assert all(len(snap & headed) <= 1 for snap in snapshots)
 
