@@ -98,3 +98,91 @@ async def test_search_reports_hmm_access_denied_as_cloudflare():
     with pytest.raises(TrackerError) as exc:
         await tracker.search("DFSU7369437")
     assert exc.value.code == "CLOUDFLARE"
+
+
+@pytest.mark.asyncio
+async def test_search_reloads_result_page_without_long_field_wait():
+    gotos: list[str] = []
+    submitted: list[str] = []
+    result_waits: list[tuple[str, str, int]] = []
+    form_waits: list[int] = []
+    detail_probes: list[tuple[str, int]] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            detail_probes.append((self.selector, timeout))
+            return False
+
+    class Page:
+        async def content(self):
+            return "<html><body></body></html>"
+
+        async def evaluate(self, script, arg=None):
+            if "setTimeout(() => button.click()" in script:
+                submitted.append(arg)
+                return "result_page" if len(submitted) == 1 else "submitted"
+            if "document.body && document.body.innerText" in script:
+                return ""
+            return False
+
+        async def goto(self, url, wait_until=None):
+            gotos.append(url)
+
+        async def wait_for_function(self, script, arg=None, timeout=0):
+            if "srchCntrNo1" in script:
+                form_waits.append(timeout)
+                return True
+            result_waits.append((script, arg, timeout))
+            return True
+
+        def locator(self, selector):
+            return Locator(selector)
+
+    tracker = HmmTracker(Page())
+    await tracker.search("HMMU4474348")
+
+    assert len(gotos) == 1
+    assert submitted == ["HMMU4474348", "HMMU4474348"]
+    assert form_waits == [8_000]
+    assert len(result_waits) == 1
+    script, marker, timeout = result_waits[0]
+    assert marker == "container-tracker:HMMU4474348"
+    assert "resultContainer === needle" in script
+    assert "hmmu4474348" in script
+    assert timeout == 30_000
+    assert detail_probes == [
+        ("a.clsShowedMoves", 800),
+        ("a:has-text('Display Previous Moves')", 800),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_expand_result_details_only_probes_once_per_result():
+    probes: list[str] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            probes.append(self.selector)
+            return False
+
+    class Page:
+        def locator(self, selector):
+            return Locator(selector)
+
+    tracker = HmmTracker(Page())
+    await tracker.expand_result_details()
+    await tracker.expand_result_details()
+    await tracker.expand_result_details()
+
+    assert probes == [
+        "a.clsShowedMoves",
+        "a:has-text('Display Previous Moves')",
+    ]

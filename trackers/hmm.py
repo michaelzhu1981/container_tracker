@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from challenges import CHALLENGE_CODE_JS, challenge_code
@@ -40,6 +41,39 @@ _SKIP_STATUS = frozenset(
     }
 )
 _MODE_ONLY = frozenset({"barge", "truck", "rail", "train", "feeder", "vessel"})
+
+_SUBMIT_SEARCH_JS = r"""(container) => {
+    const visible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden"
+            && rect.width > 8 && rect.height > 8;
+    };
+    const field = Array.from(document.querySelectorAll("input[name='srchCntrNo1']"))
+        .find(visible);
+    if (!field) {
+        return document.querySelector("#thisCntr") ? "result_page" : "field_missing";
+    }
+    const button = Array.from(document.querySelectorAll("button"))
+        .find((el) => visible(el) && (el.innerText || el.textContent || "")
+            .trim().toLowerCase().includes("retrieve"));
+    if (!button) return "button_missing";
+
+    const proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+    const descriptor = proto && Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor && descriptor.set) descriptor.set.call(field, container);
+    else field.value = container;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    field.focus();
+
+    // The marker belongs to this document. A successful HMM POST replaces the
+    // document, so the result wait cannot accept the previous container page.
+    window.__ctHmmDocumentMarker = `container-tracker:${container}`;
+    window.setTimeout(() => button.click(), 0);
+    return "submitted";
+}"""
 
 
 def _header_index(headers: list[str]) -> dict[str, int]:
@@ -167,18 +201,25 @@ class HmmTracker(BaseTracker):
     )
 
     async def expand_result_details(self) -> None:
-        for selector in (
-            "a.clsShowedMoves",
-            "a:has-text('Display Previous Moves')",
-        ):
-            link = self.page.locator(selector)
-            try:
-                if await link.first.is_visible(timeout=800):
-                    await link.first.click(timeout=3_000)
-                    await self.page.wait_for_timeout(400)
-                    return
-            except Exception:  # noqa: BLE001
-                continue
+        if getattr(self, "_details_expanded", False):
+            return
+        try:
+            for selector in (
+                "a.clsShowedMoves",
+                "a:has-text('Display Previous Moves')",
+            ):
+                link = self.page.locator(selector)
+                try:
+                    if await link.first.is_visible(timeout=800):
+                        await link.first.click(timeout=3_000)
+                        await self.page.wait_for_timeout(400)
+                        return
+                except Exception:  # noqa: BLE001
+                    continue
+        finally:
+            # Search, parse and screenshot all ask for expanded details. One
+            # result page needs at most one pair of Apple Event probes.
+            self._details_expanded = True
 
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
@@ -202,51 +243,73 @@ class HmmTracker(BaseTracker):
 
     async def search(self, container: str) -> None:
         self._search_submitted = False
+        self._details_expanded = False
         await self.dismiss_cookies(wait_ms=0)
         await self._raise_if_blocked()
-        field = self.page.locator("input[name='srchCntrNo1']")
-        try:
-            await field.first.wait_for(state="visible", timeout=12_000)
-        except Exception:  # noqa: BLE001
+
+        submit_state = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
+        if submit_state in {"field_missing", "result_page"}:
+            # HMM keeps a hidden search input in result documents. Waiting for
+            # that input used to cost 12 seconds for every box after the first.
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
-            await self._raise_if_blocked()
-            field = self.page.locator("input[name='srchCntrNo1']")
             try:
-                await field.first.wait_for(state="visible", timeout=12_000)
-            except Exception as retry_exc:  # noqa: BLE001
-                await self._raise_if_blocked()
-                raise TrackerError(
-                    "Could not find the container search field.", "SELECTOR"
-                ) from retry_exc
-        await field.first.click()
-        await field.first.fill("")
-        await field.first.fill(container)
-        retrieve = self.page.locator("button:has-text('Retrieve')")
-        try:
-            await retrieve.first.click(timeout=8_000)
-        except Exception:  # noqa: BLE001
-            await field.first.press("Enter")
+                await self.page.wait_for_function(
+                    """() => {
+                        const visible = (el) => {
+                            if (!el) return false;
+                            const style = window.getComputedStyle(el);
+                            const rect = el.getBoundingClientRect();
+                            return style.display !== "none" && style.visibility !== "hidden"
+                                && rect.width > 8 && rect.height > 8;
+                        };
+                        return Array.from(
+                            document.querySelectorAll("input[name='srchCntrNo1']")
+                        ).some(visible) || (DETECT_CHALLENGE)();
+                    }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                    timeout=8_000,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await self._raise_if_blocked()
+            submit_state = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
+
+        if submit_state != "submitted":
+            code = "SELECTOR"
+            detail = (
+                "container search field"
+                if submit_state == "field_missing"
+                else "Retrieve button"
+            )
+            raise TrackerError(f"Could not find the {detail}.", code)
+
         self._search_submitted = True
-        await self._wait_for_results()
+        await self._wait_for_results(container)
         await self.expand_result_details()
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, container: str) -> None:
+        needle = json.dumps(container.strip().lower())
+        document_marker = f"container-tracker:{container}"
         try:
             await self.page.wait_for_function(
-                """() => {
+                """(documentMarker) => {
+                    if (window.__ctHmmDocumentMarker === documentMarker) return false;
+                    const needle = NEEDLE;
                     const text = (document.body && document.body.innerText || "").toLowerCase();
+                    const result = document.querySelector("#thisCntr");
+                    const resultContainer = (
+                        result && (result.value || result.textContent || "")
+                    ).trim().toLowerCase();
                     return (
-                        !!document.querySelector("#shipmentProgress") ||
-                        !!document.querySelector("#thisCntr") ||
-                        !!document.querySelector("tr.clsMoves") ||
-                        text.includes("shipment history") ||
-                        text.includes("vessel departure from pol") ||
+                        resultContainer === needle ||
                         text.includes("container no. is invalid") ||
                         text.includes("invalid") && text.includes("container") ||
                         (DETECT_CHALLENGE)()
                     );
-                }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                }"""
+                .replace("NEEDLE", needle)
+                .replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                arg=document_marker,
                 timeout=30_000,
             )
         except Exception:  # noqa: BLE001
