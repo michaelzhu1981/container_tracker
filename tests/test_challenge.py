@@ -582,8 +582,12 @@ async def test_search_resumes_after_challenge_without_duplicate_queries(recovery
         def __init__(self):
             super().__init__(FakePage(text="Search"))
             self.searches = []
+            self.opens = 0
             self.waits = 0
             self.parses = 0
+
+        async def open_page(self):
+            self.opens += 1
 
         async def search(self, container):
             self.searches.append(container)
@@ -610,6 +614,7 @@ async def test_search_resumes_after_challenge_without_duplicate_queries(recovery
     await tracker.track("ECMU7271573")
     expected = 1 if recovery == "results_present" else 2
     assert tracker.searches == ["ECMU7271573"] * expected
+    assert tracker.opens == (1 if recovery == "results_present" else 2)
 
 
 def test_maersk_rebinds_response_listener_after_page_replacement():

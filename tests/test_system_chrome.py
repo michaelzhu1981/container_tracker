@@ -190,6 +190,37 @@ def test_system_chrome_evaluate_passes_argument(monkeypatch):
     assert "cont" in seen[0]
 
 
+@pytest.mark.asyncio
+async def test_wait_for_function_retries_transient_navigation(monkeypatch):
+    page = SystemChromePage(
+        "https://www.cma-cgm.com/ebusiness/tracking",
+        host="cma-cgm.com",
+        carrier="CMDU",
+        challenge_name="DataDome",
+    )
+    attempts = 0
+
+    async def evaluate(_script, arg=None):
+        nonlocal attempts
+        assert arg == "current-document"
+        attempts += 1
+        if attempts == 1:
+            raise SystemChromeError(
+                "Chrome returned no JavaScript result.", "NAVIGATION"
+            )
+        return True
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(page, "evaluate", evaluate)
+    monkeypatch.setattr("system_chrome.asyncio.sleep", no_sleep)
+    assert await page.wait_for_function(
+        "() => true", arg="current-document", timeout=1_000
+    ) is True
+    assert attempts == 2
+
+
 def test_system_chrome_page_keeps_carrier_labels():
     page = SystemChromePage(
         "https://www.hapag-lloyd.com/track",

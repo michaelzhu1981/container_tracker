@@ -1360,7 +1360,11 @@ class SystemChromePage:
         await asyncio.sleep(max(ms, 0) / 1000)
 
     async def wait_for_function(
-        self, script: str, timeout: float = 0, polling: float | None = None
+        self,
+        script: str,
+        arg: Any = None,
+        timeout: float = 0,
+        polling: float | None = None,
     ) -> bool:
         deadline = time.monotonic() + max(timeout, 0) / 1000
         interval = 0.5 if polling is None else max(float(polling), 50) / 1000
@@ -1370,10 +1374,15 @@ class SystemChromePage:
             if self.should_abort and self.should_abort():
                 raise SystemChromeError("Stopped while waiting.")
             try:
-                if await self.evaluate(script):
+                if await self.evaluate(script, arg):
                     return True
-            except SystemChromeError:
-                raise
+            except SystemChromeError as exc:
+                # A POST navigation temporarily makes Chrome's Apple Event
+                # JavaScript result empty. Playwright retries this condition;
+                # keep polling here as well instead of letting callers parse
+                # the page while the new document is only partly loaded.
+                if exc.code not in {"NAVIGATION", "TIMEOUT"}:
+                    raise
             await asyncio.sleep(interval)
         raise TimeoutError("still challenged")
 

@@ -559,6 +559,14 @@ class CmaTracker(BaseTracker):
             await field.fill(container)
         except Exception:  # noqa: BLE001
             await field.fill(container, force=True)
+        # CMA submits this form with POST. Mark the current document so the
+        # result wait cannot be satisfied by the previous container's grid
+        # before Chrome starts the navigation.
+        document_marker = f"container-tracker:{container}"
+        await self.page.evaluate(
+            "(marker) => { window.__ctCmaDocumentMarker = marker; return true; }",
+            document_marker,
+        )
         clicked = False
         for selector in (
             "#btnTracking",
@@ -580,26 +588,34 @@ class CmaTracker(BaseTracker):
         if not clicked:
             await field.press("Enter")
         self._search_submitted = True
-        await self._wait_for_results()
+        await self._wait_for_results(document_marker)
         await self.expand_result_details()
 
-    async def _wait_for_results(self) -> None:
+    async def _wait_for_results(self, document_marker: str = "") -> None:
         try:
             await self.page.wait_for_function(
-                """() => {
+                """(documentMarker) => {
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     const err = document.querySelector("#trackingAlertError");
                     const errVisible = !!(err && getComputedStyle(err).display !== "none");
+                    const challenged = (DETECT_CHALLENGE)();
+                    if (challenged) return true;
+                    if (
+                        documentMarker &&
+                        window.__ctCmaDocumentMarker === documentMarker
+                    ) {
+                        return false;
+                    }
                     return (
                         !!document.querySelector("#gridTrackingDetails .capsule") ||
                         !!document.querySelector("#gridTrackingDetails tbody tr") ||
                         text.includes("loaded on board") ||
                         text.includes("empty to shipper") ||
                         text.includes("ready to be loaded") ||
-                        errVisible ||
-                        (DETECT_CHALLENGE)()
+                        errVisible
                     );
                 }""".replace("DETECT_CHALLENGE", CHALLENGE_CODE_JS),
+                arg=document_marker,
                 timeout=40_000,
             )
         except Exception:  # noqa: BLE001

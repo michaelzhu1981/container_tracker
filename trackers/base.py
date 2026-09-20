@@ -652,8 +652,10 @@ class BaseTracker(ABC):
             except TrackerError as exc:
                 if not recovered or exc.code != "PARSE":
                     raise
-                # Some challenges return to an empty form instead of replaying
-                # the search. Resubmit once, retaining this browser session.
+                # A cleared challenge may return to an empty form or Chrome's
+                # ERR_CACHE_MISS page for a discarded POST. Always reopen the
+                # carrier entry page before resubmitting in the same session.
+                await self.open_page()
                 await self.search(container)
                 await self.pass_or_wait_for_challenge()
                 if looks_like_no_result(await self._visible_text()):

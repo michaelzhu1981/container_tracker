@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from status_engine import evaluate
 from trackers.cma import CmaTracker, parse_cma_html
 
@@ -177,3 +179,20 @@ def test_expand_result_details_does_not_poll_when_click_adds_nothing():
     assert waits == ["wait:200", "wait:200", "wait:200", "wait:200"]
     asyncio.run(tracker.expand_result_details())
     assert page.clicked == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_for_results_requires_a_new_post_document():
+    class Page:
+        async def wait_for_function(self, script, arg=None, timeout=0):
+            assert arg == "container-tracker:CMAU1234567"
+            assert "__ctCmaDocumentMarker === documentMarker" in script
+            assert script.index("__ctCmaDocumentMarker") < script.index(
+                '#gridTrackingDetails .capsule'
+            )
+            assert timeout == 40_000
+            return True
+
+    await CmaTracker(Page())._wait_for_results(
+        "container-tracker:CMAU1234567"
+    )
