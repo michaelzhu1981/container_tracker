@@ -12,6 +12,7 @@ NAV_TIMEOUT_MS = 45_000
 ACTION_TIMEOUT_MS = 15_000
 QUERY_DELAY_SECONDS = (2.0, 4.0)
 CHALLENGE_QUERY_DELAY_SECONDS = (5.0, 8.0)
+HDMU_QUERY_DELAY_SECONDS = (3.0, 3.0)
 EGLV_NAVIGATION_RETRY_DELAY_SECONDS = 3.0
 EXCEL_BATCH_SIZE = 5
 EXCEL_FLUSH_SECONDS = 10.0
@@ -109,6 +110,8 @@ def chrome_profile_dir(carrier: str) -> Path:
 
 
 def query_delay_seconds(carrier: str) -> tuple[float, float]:
+    if carrier == "HDMU":
+        return HDMU_QUERY_DELAY_SECONDS
     if carrier in CHALLENGE_CARRIERS:
         return CHALLENGE_QUERY_DELAY_SECONDS
     return QUERY_DELAY_SECONDS

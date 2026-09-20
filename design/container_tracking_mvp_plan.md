@@ -510,7 +510,7 @@ Output: output/containers_result.xlsx
 ### 5.5 config.py
 
 - 全局 timeout
-- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；`CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU、OOLU、ZIMU）5–8 秒
+- 查询间隔 2–4 秒（`random.uniform(2, 4)`）；HDMU 固定 3 秒；其他 `CHALLENGE_CARRIERS`（HLCU、MSCU、MAEU、CMDU、OOLU、ZIMU）5–8 秒
 - Cloudflare 自动等待 `AUTO_CHALLENGE_WAIT_MS`（约 25s），人工兜底 `CHALLENGE_WAIT_MS`（180s）
 - 挑战未过：刷新 tracking URL 最多 2 次，间隔 5s / 15s
 - locale `en-US`

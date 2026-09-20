@@ -240,6 +240,7 @@ class BaseTracker(ABC):
     tracking_url: str = ""
     screenshot_selectors: tuple[str, ...] = ()
     screenshot_cookie_wait_ms: int = 1500
+    reuse_parsed_html_for_artifacts: bool = False
     wait_in_current_browser: bool = False
     use_system_chrome: bool = False
     system_chrome_host: str = ""
@@ -257,6 +258,7 @@ class BaseTracker(ABC):
         self.browser = browser
         self._screenshot: Path | None = None
         self._html: Path | None = None
+        self._parsed_html: str | None = None
         self._human_wait_used = False
 
     async def _click_cookie_banner(self) -> bool:
@@ -581,7 +583,14 @@ class BaseTracker(ABC):
         self._screenshot = None
         self._html = html_path(container)
         try:
-            html = await self.page.content()
+            html = (
+                self._parsed_html
+                if (
+                    self.reuse_parsed_html_for_artifacts
+                    and self._parsed_html is not None
+                )
+                else await self.page.content()
+            )
             self._html.write_text(html, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             if "has been closed" in str(exc) or "TargetClosed" in type(exc).__name__:
@@ -593,7 +602,11 @@ class BaseTracker(ABC):
             html = ""
         if not allow_screenshot:
             return
-        text = await self._visible_text()
+        text = (
+            ""
+            if self.reuse_parsed_html_for_artifacts
+            else await self._visible_text()
+        )
         if not is_query_screenshot_page(text, html):
             LOGGER.info("Skipping screenshot for %s; page is not a tracking result.", container)
             return
@@ -624,6 +637,7 @@ class BaseTracker(ABC):
     async def track(self, container: str, *, session_ready: bool = False) -> TrackResult:
         self._screenshot = None
         self._html = None
+        self._parsed_html = None
         self._human_wait_used = False
         stamp = checked_at()
         try:

@@ -186,3 +186,36 @@ async def test_expand_result_details_only_probes_once_per_result():
         "a.clsShowedMoves",
         "a:has-text('Display Previous Moves')",
     ]
+
+
+@pytest.mark.asyncio
+async def test_success_screenshot_uses_single_visible_system_chrome_crop(tmp_path):
+    calls: list[dict] = []
+
+    class Locator:
+        def __init__(self, selector: str):
+            self.selector = selector
+            self.first = self
+
+        async def is_visible(self, timeout=0):
+            return self.selector == "#shipmentProgress"
+
+    class Page:
+        is_system_chrome = True
+
+        def locator(self, selector):
+            return Locator(selector)
+
+        async def screenshot(self, **kwargs):
+            calls.append(kwargs)
+
+    path = tmp_path / "hmm.png"
+    tracker = HmmTracker(Page())
+    assert await tracker._screenshot_query_content(path) is True
+    assert calls == [
+        {
+            "path": str(path),
+            "selector": "#shipmentProgress",
+            "single_view": True,
+        }
+    ]

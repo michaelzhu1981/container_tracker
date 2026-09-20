@@ -280,6 +280,26 @@ def test_capture_chrome_png_uses_window_screenshot(tmp_path, monkeypatch, host, 
     assert b"window-shot" in wrote.read_bytes()
 
 
+def test_capture_chrome_png_forwards_single_view_mode(tmp_path, monkeypatch):
+    dest = tmp_path / "shot.png"
+    seen: list[tuple[str | None, bool]] = []
+
+    def fake_window(path, *, host, selector=None, single_view=False):
+        seen.append((selector, single_view))
+        dest.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fast-shot" * 120)
+        return True
+
+    monkeypatch.setattr("system_chrome._try_window_screenshot", fake_window)
+    wrote = capture_chrome_png(
+        dest,
+        host="hmm21.com",
+        selector="#shipmentProgress",
+        single_view=True,
+    )
+    assert seen == [("#shipmentProgress", True)]
+    assert wrote.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_stitch_pngs_vertically_keeps_both_slices(tmp_path):
     top = tmp_path / "top.png"
     bottom = tmp_path / "bottom.png"

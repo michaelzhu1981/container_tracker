@@ -113,7 +113,7 @@ def test_challenge_carrier_defaults():
     assert cmdu_lo >= 5
     assert oolu_lo >= 5
     assert zimu_lo >= 5
-    assert hdmu_lo >= 5
+    assert (hdmu_lo, hdmu_hi) == (3.0, 3.0)
     assert ymja_hi <= 4
     assert oney_hi <= 4
     assert cosu_hi <= 4

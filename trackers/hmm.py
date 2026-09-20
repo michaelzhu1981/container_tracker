@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from challenges import CHALLENGE_CODE_JS, challenge_code
 from event_text import (
@@ -193,6 +194,8 @@ class HmmTracker(BaseTracker):
     system_chrome_challenge = "HMM access check"
     timeline_order = "newest_first"
     tracking_url = TRACK_URL
+    screenshot_cookie_wait_ms = 0
+    reuse_parsed_html_for_artifacts = True
     screenshot_selectors = (
         "#shipmentProgress",
         "#trackingInfomationDateResultTable",
@@ -224,6 +227,23 @@ class HmmTracker(BaseTracker):
     async def prepare_for_screenshot(self) -> None:
         await self.expand_result_details()
         await super().prepare_for_screenshot()
+
+    async def _screenshot_query_content(self, path: Path) -> bool:
+        if not getattr(self.page, "is_system_chrome", False):
+            return await super()._screenshot_query_content(path)
+        for selector in self.screenshot_selectors:
+            locator = self.page.locator(selector)
+            try:
+                if await locator.first.is_visible(timeout=300):
+                    # A single visible crop preserves quick evidence without
+                    # scrolling and stitching the whole HMM result section.
+                    await self.page.screenshot(
+                        path=str(path), selector=selector, single_view=True
+                    )
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
 
     async def open_page(self) -> None:
         if not await self.open_tracking_or_reuse("hmm21.com"):
@@ -318,6 +338,7 @@ class HmmTracker(BaseTracker):
     async def parse_events(self) -> list[CanonicalEvent]:
         await self.expand_result_details()
         html = await self.page.content()
+        self._parsed_html = html
         events = parse_hmm_html(html)
         if events:
             return events

@@ -877,16 +877,22 @@ def _try_scrolled_element_screenshot(
 
 
 def _try_window_screenshot(
-    path: str | Path, *, host: str, selector: str | None = None
+    path: str | Path,
+    *,
+    host: str,
+    selector: str | None = None,
+    single_view: bool = False,
 ) -> bool:
     dest = Path(path)
     activate_chrome_host(host)
-    time.sleep(0.35)
+    time.sleep(0.15 if single_view else 0.35)
     window = chrome_window_rect(host=host)
     if window is None:
         LOGGER.info("No on-screen Chrome window found for %s", host)
         return False
-    if _try_scrolled_element_screenshot(dest, host=host, selector=selector, window=window):
+    if not single_view and _try_scrolled_element_screenshot(
+        dest, host=host, selector=selector, window=window
+    ):
         return True
     rect = window
     try:
@@ -894,8 +900,15 @@ def _try_window_screenshot(
         element = _parse_rect(chrome_js(script, host=host))
     except SystemChromeError:
         element = None
-    if element is not None and _rect_inside(element, window):
-        rect = element
+    if element is not None:
+        if _rect_inside(element, window):
+            rect = element
+        elif single_view:
+            clipped = _clip_rect(element, window)
+            if clipped is not None:
+                rect = clipped
+    elif single_view and selector:
+        return False
     try:
         return _screencapture_rect(rect, dest)
     except (OSError, subprocess.SubprocessError, TimeoutError):
@@ -915,9 +928,18 @@ def write_png_data_url(data: Any, path: str | Path) -> Path:
     return dest
 
 
-def capture_chrome_png(path: str | Path, *, host: str, selector: str | None = None) -> Path:
+def capture_chrome_png(
+    path: str | Path,
+    *,
+    host: str,
+    selector: str | None = None,
+    single_view: bool = False,
+) -> Path:
     dest = Path(path)
-    if _try_window_screenshot(dest, host=host, selector=selector):
+    window_kwargs = {"host": host, "selector": selector}
+    if single_view:
+        window_kwargs["single_view"] = True
+    if _try_window_screenshot(dest, **window_kwargs):
         return dest
     # Screen Recording can be unavailable to a background service even when
     # Chrome automation is allowed. Paint the bound result DOM as a reliable
@@ -1395,12 +1417,16 @@ class SystemChromePage:
         full_page: bool = False,
         clip=None,
         selector: str | None = None,
+        single_view: bool = False,
     ) -> None:
         if not path:
             return
         token = _CAPTURE_TARGET.set(self._bound_target())
         try:
-            await asyncio.to_thread(capture_chrome_png, path, host=self._host, selector=selector)
+            capture_kwargs = {"host": self._host, "selector": selector}
+            if single_view:
+                capture_kwargs["single_view"] = True
+            await asyncio.to_thread(capture_chrome_png, path, **capture_kwargs)
         finally:
             _CAPTURE_TARGET.reset(token)
 
