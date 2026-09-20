@@ -126,6 +126,8 @@ Loaded / Sailed 只认 feeder / mother / Vessel 的 Actual 事件。驳船离港
 
 EGLV 的免登录箱号查询只提供最新一条动态：`Loaded (FCL) on vessel` 按已开船处理，ATD 使用该事件时间；`Transship container loaded on vessel`、`Empty container returned`、`Pick-up by merchant haulage`、`Received (FCL)`、`Discharged (FCL)`、`Discharged and waiting for transshipping` 也按已开船处理，但由于无法反推起运信息，POL、ATD 留空。其他装船或离港状态分别判断 `LOADED_WAITING_DEPARTURE` / `SAILED`。官网没有同时返回本航次历史，因此不补造不可见的字段。
 
+EGLV 单箱查询若首次返回 `NAVIGATION`，程序等待 3 秒后自动重试一次；第二次查询结果作为该箱最终结果。
+
 常见错误码：`CLOUDFLARE` `CAPTCHA` `SELECTOR` `PARSE` `TIMEOUT` `NAVIGATION` `BROWSER_PERMISSION` `BROWSER_CLOSED` `TAB_NOT_FOUND` `INVALID_INPUT` `UNSUPPORTED_CARRIER` `AMBIGUOUS_JOURNEY`。
 
 `BROWSER_PERMISSION` 表示 Chrome 或 macOS 明确拒绝自动化访问；若提示 JavaScript 未开启，在普通 Chrome 的 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript** 中开启，页面会显示等待及操作说明。关闭 Wait for challenge 时直接报告错误。窗口关闭和页签丢失分别报告 `BROWSER_CLOSED` / `TAB_NOT_FOUND`，不会误报 CAPTCHA 或等待 10 分钟。

@@ -17,6 +17,7 @@ from config import (
     CARRIER_TIMEOUT_MS,
     CIRCUIT_BREAK_CODES,
     CIRCUIT_BREAK_STREAK,
+    EGLV_NAVIGATION_RETRY_DELAY_SECONDS,
     EXCEL_BATCH_SIZE,
     EXCEL_FLUSH_SECONDS,
     HEADED_SERIAL_CARRIERS,
@@ -594,7 +595,16 @@ async def _track_one(
     LOGGER.info("Tracking %s %s", carrier, container)
     if container_shape_ok(container) and not iso6346_check_digit_ok(container):
         LOGGER.warning("ISO 6346 check digit failed for %s; querying anyway.", container)
-    return await tracker.track(container, session_ready=session_ready)
+    result = await tracker.track(container, session_ready=session_ready)
+    if carrier == "EGLV" and result.error_code == "NAVIGATION":
+        LOGGER.info(
+            "Retrying EGLV %s after NAVIGATION in %.0f seconds",
+            container,
+            EGLV_NAVIGATION_RETRY_DELAY_SECONDS,
+        )
+        await sleep_or_cancel(EGLV_NAVIGATION_RETRY_DELAY_SECONDS, None)
+        result = await tracker.track(container, session_ready=session_ready)
+    return result
 
 
 async def run_single(

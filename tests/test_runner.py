@@ -135,6 +135,86 @@ def test_cli_serve_flag():
     assert args.port == 9001
 
 
+@pytest.mark.asyncio
+async def test_eglv_navigation_retries_once_after_three_seconds(monkeypatch):
+    from models import TrackResult
+    from runner import _track_one
+
+    calls: list[bool] = []
+    delays: list[tuple[float, object]] = []
+
+    class FakeTracker:
+        page = None
+
+        async def track(self, container, *, session_ready=False):
+            calls.append(session_ready)
+            if len(calls) == 1:
+                return TrackResult(
+                    container=container,
+                    carrier="EGLV",
+                    error_code="NAVIGATION",
+                )
+            return TrackResult(
+                container=container,
+                carrier="EGLV",
+                status="SAILED",
+                success=True,
+                check_result="SUCCESS",
+            )
+
+    async def fake_sleep(seconds, cancel_event):
+        delays.append((seconds, cancel_event))
+        return False
+
+    monkeypatch.setattr("runner.sleep_or_cancel", fake_sleep)
+    result = await _track_one(
+        object(),
+        "EGLV",
+        "TGBU9973108",
+        tracker=FakeTracker(),
+        session_ready=True,
+    )
+
+    assert calls == [True, True]
+    assert delays == [(3.0, None)]
+    assert result.status == "SAILED"
+
+
+@pytest.mark.asyncio
+async def test_navigation_retry_is_not_applied_to_other_carriers(monkeypatch):
+    from models import TrackResult
+    from runner import _track_one
+
+    calls = 0
+
+    class FakeTracker:
+        page = None
+
+        async def track(self, container, *, session_ready=False):
+            nonlocal calls
+            calls += 1
+            return TrackResult(
+                container=container,
+                carrier="COSU",
+                error_code="NAVIGATION",
+            )
+
+    async def unexpected_sleep(_seconds, _cancel_event):
+        raise AssertionError("non-EGLV NAVIGATION must not be retried")
+
+    monkeypatch.setattr("runner.sleep_or_cancel", unexpected_sleep)
+    result = await _track_one(
+        object(),
+        "COSU",
+        "CSNU6609294",
+        tracker=FakeTracker(),
+        session_ready=True,
+    )
+
+    assert calls == 1
+    assert result.error_code == "NAVIGATION"
+
+
 def test_chrome_launch_args_are_not_automated():
     args = chrome_launch_args(
         "/tmp/sessions/chrome_cmdu",
