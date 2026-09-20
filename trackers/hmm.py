@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from pathlib import Path
 
 from challenges import CHALLENGE_CODE_JS, challenge_code
@@ -20,6 +22,7 @@ from ports import normalize_key
 from trackers.base import BaseTracker, TrackerError, looks_like_no_result
 
 TRACK_URL = "https://www.hmm21.com/e-service/general/trackNTrace/TrackNTrace.do"
+LOGGER = logging.getLogger("container_tracker")
 
 _HEADER_HINTS = {
     "date": ("date",),
@@ -203,6 +206,48 @@ class HmmTracker(BaseTracker):
         "table:has-text('Vessel Departure from POL')",
     )
 
+    def _record_timing(self, phase: str, started: float) -> None:
+        timings = getattr(self, "_phase_timings_ms", None)
+        if timings is not None:
+            timings[phase] = timings.get(phase, 0.0) + (
+                time.perf_counter() - started
+            ) * 1000
+
+    async def prepare_session(self) -> None:
+        started = time.perf_counter()
+        try:
+            await super().prepare_session()
+        finally:
+            LOGGER.info(
+                "HDMU_TIMING phase=session_prepare duration_ms=%.0f",
+                (time.perf_counter() - started) * 1000,
+            )
+
+    async def track(self, container: str, *, session_ready: bool = False):
+        self._phase_timings_ms: dict[str, float] = {}
+        started = time.perf_counter()
+        try:
+            return await super().track(container, session_ready=session_ready)
+        finally:
+            total_ms = (time.perf_counter() - started) * 1000
+            known_ms = sum(
+                value
+                for key, value in self._phase_timings_ms.items()
+                if key.startswith(("search_", "parse_"))
+                or key == "artifacts_total"
+            )
+            payload = {
+                key: round(value)
+                for key, value in sorted(self._phase_timings_ms.items())
+            }
+            payload["other"] = round(max(0.0, total_ms - known_ms))
+            payload["total"] = round(total_ms)
+            LOGGER.info(
+                "HDMU_TIMING container=%s durations_ms=%s",
+                container,
+                json.dumps(payload, sort_keys=True),
+            )
+
     async def expand_result_details(self) -> None:
         if getattr(self, "_details_expanded", False):
             return
@@ -225,25 +270,42 @@ class HmmTracker(BaseTracker):
             self._details_expanded = True
 
     async def prepare_for_screenshot(self) -> None:
-        await self.expand_result_details()
-        await super().prepare_for_screenshot()
+        started = time.perf_counter()
+        try:
+            await self.expand_result_details()
+            await super().prepare_for_screenshot()
+        finally:
+            self._record_timing("screenshot_prepare", started)
 
     async def _screenshot_query_content(self, path: Path) -> bool:
-        if not getattr(self.page, "is_system_chrome", False):
-            return await super()._screenshot_query_content(path)
-        for selector in self.screenshot_selectors:
-            locator = self.page.locator(selector)
-            try:
-                if await locator.first.is_visible(timeout=300):
-                    # A single visible crop preserves quick evidence without
-                    # scrolling and stitching the whole HMM result section.
-                    await self.page.screenshot(
-                        path=str(path), selector=selector, single_view=True
-                    )
-                    return True
-            except Exception:  # noqa: BLE001
-                continue
-        return False
+        started = time.perf_counter()
+        try:
+            if not getattr(self.page, "is_system_chrome", False):
+                return await super()._screenshot_query_content(path)
+            for selector in self.screenshot_selectors:
+                locator = self.page.locator(selector)
+                try:
+                    if await locator.first.is_visible(timeout=300):
+                        # A single visible crop preserves quick evidence without
+                        # scrolling and stitching the whole HMM result section.
+                        await self.page.screenshot(
+                            path=str(path), selector=selector, single_view=True
+                        )
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+            return False
+        finally:
+            self._record_timing("screenshot_capture", started)
+
+    async def save_artifacts(self, container: str, *, allow_screenshot: bool = True) -> None:
+        started = time.perf_counter()
+        try:
+            await super().save_artifacts(
+                container, allow_screenshot=allow_screenshot
+            )
+        finally:
+            self._record_timing("artifacts_total", started)
 
     async def open_page(self) -> None:
         if not await self.open_tracking_or_reuse("hmm21.com"):
@@ -264,13 +326,18 @@ class HmmTracker(BaseTracker):
     async def search(self, container: str) -> None:
         self._search_submitted = False
         self._details_expanded = False
+        started = time.perf_counter()
         await self.dismiss_cookies(wait_ms=0)
         await self._raise_if_blocked()
+        self._record_timing("search_preflight", started)
 
+        started = time.perf_counter()
         submit_state = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
+        self._record_timing("search_submit", started)
         if submit_state in {"field_missing", "result_page"}:
             # HMM keeps a hidden search input in result documents. Waiting for
             # that input used to cost 12 seconds for every box after the first.
+            started = time.perf_counter()
             await self.page.goto(self.tracking_url, wait_until="domcontentloaded")
             await self.dismiss_cookies(wait_ms=0)
             try:
@@ -293,6 +360,7 @@ class HmmTracker(BaseTracker):
                 pass
             await self._raise_if_blocked()
             submit_state = await self.page.evaluate(_SUBMIT_SEARCH_JS, container)
+            self._record_timing("search_return_to_form", started)
 
         if submit_state != "submitted":
             code = "SELECTOR"
@@ -304,8 +372,12 @@ class HmmTracker(BaseTracker):
             raise TrackerError(f"Could not find the {detail}.", code)
 
         self._search_submitted = True
+        started = time.perf_counter()
         await self._wait_for_results(container)
+        self._record_timing("search_wait_result", started)
+        started = time.perf_counter()
         await self.expand_result_details()
+        self._record_timing("search_expand", started)
 
     async def _wait_for_results(self, container: str) -> None:
         needle = json.dumps(container.strip().lower())
@@ -313,18 +385,22 @@ class HmmTracker(BaseTracker):
         try:
             await self.page.wait_for_function(
                 """(documentMarker) => {
-                    if (window.__ctHmmDocumentMarker === documentMarker) return false;
                     const needle = NEEDLE;
                     const text = (document.body && document.body.innerText || "").toLowerCase();
                     const result = document.querySelector("#thisCntr");
                     const resultContainer = (
                         result && (result.value || result.textContent || "")
                     ).trim().toLowerCase();
+                    // HMM usually replaces the result area in the same
+                    // document. An exact container match is therefore the
+                    // strongest completion signal and must precede the old
+                    // document guard.
+                    if (resultContainer === needle) return true;
+                    if ((DETECT_CHALLENGE)()) return true;
+                    if (window.__ctHmmDocumentMarker === documentMarker) return false;
                     return (
-                        resultContainer === needle ||
                         text.includes("container no. is invalid") ||
-                        text.includes("invalid") && text.includes("container") ||
-                        (DETECT_CHALLENGE)()
+                        text.includes("invalid") && text.includes("container")
                     );
                 }"""
                 .replace("NEEDLE", needle)
@@ -337,9 +413,13 @@ class HmmTracker(BaseTracker):
 
     async def parse_events(self) -> list[CanonicalEvent]:
         await self.expand_result_details()
+        started = time.perf_counter()
         html = await self.page.content()
+        self._record_timing("parse_read_html", started)
         self._parsed_html = html
+        started = time.perf_counter()
         events = parse_hmm_html(html)
+        self._record_timing("parse_html", started)
         if events:
             return events
         text = await self._visible_text()

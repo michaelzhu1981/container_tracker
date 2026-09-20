@@ -152,6 +152,9 @@ async def test_search_reloads_result_page_without_long_field_wait():
     script, marker, timeout = result_waits[0]
     assert marker == "container-tracker:HMMU4474348"
     assert "resultContainer === needle" in script
+    assert script.index("resultContainer === needle") < script.index(
+        "__ctHmmDocumentMarker === documentMarker"
+    )
     assert "hmmu4474348" in script
     assert timeout == 30_000
     assert detail_probes == [
