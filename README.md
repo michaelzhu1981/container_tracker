@@ -59,6 +59,39 @@ If Chrome reports that JavaScript from Apple Events is disabled, enable **View �
 
 如果 Chrome 提示未允许来自 Apple 事件的 JavaScript，请在普通 Google Chrome 中打开 **查看 → 开发者 → 允许 Apple 事件中的 JavaScript**。macOS 也可能请求“自动化”或“屏幕录制”权限，请授权给运行本工具的终端或进程。
 
+## Porting to Windows / 移植到 Windows
+
+> **Current status:** this repository is macOS-first and does not yet support every carrier on Windows without code changes. Excel parsing, result generation, the FastAPI web console, status evaluation, and the Playwright browser path are largely portable. Normal-Chrome automation and the MSC manual handoff are macOS-specific.
+>
+> **当前状态：** 本项目以 macOS 为首要运行平台，未经代码改造时不能在 Windows 上支持全部船公司。Excel 读写、结果生成、FastAPI 网页控制台、状态判断和 Playwright 浏览器流程基本可移植；普通 Chrome 自动控制及 MSC 人工交接仍是 macOS 专用实现。
+
+Windows setup can use the following PowerShell commands. Calling the virtual-environment executable directly avoids depending on the PowerShell activation policy:
+
+Windows 可使用以下 PowerShell 命令安装。直接调用虚拟环境中的可执行文件，可避免依赖 PowerShell 的脚本激活策略：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe app.py --serve
+```
+
+Do not use `serve.sh` on Windows. Add a PowerShell or `.bat` launcher if a one-command start is required.
+
+Windows 上不要使用 `serve.sh`。如需一键启动，应另行提供 PowerShell 或 `.bat` 启动脚本。
+
+| Area / 范围 | Current macOS implementation / 当前 macOS 实现 | Required Windows work / Windows 改造要求 |
+|---|---|---|
+| Normal Chrome control / 普通 Chrome 控制 | `chrome_control.py`, `chrome_bridge.m`, and `system_chrome.py` use Apple Events, ScriptingBridge, `xcrun`, `open`, `osascript`, and `screencapture`. | Add a Windows backend selected by `sys.platform`. It must preserve per-carrier profiles, bind the exact Chrome process/window/tab, execute page JavaScript, close only the owned window, and retain the existing error-code contract. / 按 `sys.platform` 选择 Windows 后端；必须保留分船公司资料目录、精确绑定进程/窗口/页签、页面 JavaScript 执行、仅关闭本任务窗口及现有错误码契约。 |
+| Affected carriers / 受影响船公司 | `HLCU`, `CMDU`, `OOLU`, `HDMU`, and `ZIMU` always use the macOS normal-Chrome backend. `MSCU` starts in Playwright but its fallback handoff uses macOS commands and the `Cmd+Q` workflow. | These carriers are not Windows-ready until the replacement backend and handoff are implemented. `ONEY`, `YMJA`, `COSU`, `EGLV`, and `MAEU` use the more portable Playwright path, but still require live Windows verification. / 在替代后端和交接流程完成前，这些船公司不能视为支持 Windows；其余 Playwright 船公司也必须逐家进行 Windows 实测。 |
+| Process and browser launch / 进程与浏览器启动 | `runner.py` checks profiles with `ps -ax`; Chrome is launched with macOS `open`. | Replace process discovery and launch/exit detection with Windows APIs or a dependency such as `psutil`. Quote paths with spaces and detect Chrome in standard and user-selected locations. / 使用 Windows API 或 `psutil` 替换进程发现、启动与退出检测，并正确处理含空格路径及 Chrome 的标准或用户指定安装位置。 |
+| Screenshots / 截图 | Normal-Chrome evidence capture uses macOS window bounds and `screencapture`, with a DOM-render fallback. | Implement Windows window capture and verify crop coordinates under 100%, 125%, and 150% display scaling; retain the DOM-render fallback when native capture is unavailable. / 实现 Windows 窗口截图，并在 100%、125%、150% 显示缩放下验证裁剪坐标；原生截图不可用时继续保留 DOM 渲染回退。 |
+| Runtime files / 运行时文件 | Paths are mostly handled with `pathlib`, while Chrome profiles live under `sessions/`. | Do not copy `sessions/` between macOS and Windows; create fresh profiles on the target system. `input/`, `output/`, logs, and screenshots may be copied when needed. Keep only one process using each carrier profile. / 不要跨系统复制 `sessions/`，应在 Windows 上重新建立资料目录；可按需复制输入、输出、日志和截图，并确保每个船公司资料目录同一时间只被一个进程使用。 |
+
+Before declaring Windows support, run `python -m pytest`, add platform-specific tests for the Windows Chrome backend, and perform a live smoke test for every carrier. Verify start/stop, CAPTCHA waits, profile reuse, Excel output locking, screenshots, and cleanup after a browser window is closed unexpectedly.
+
+正式声明支持 Windows 前，应运行 `python -m pytest`，为 Windows Chrome 后端增加平台专项测试，并对每家船公司做真实网页冒烟测试。需覆盖开始/停止、验证码等待、资料目录复用、Excel 输出锁、截图，以及浏览器窗口意外关闭后的清理行为。
+
 ## Input workbook / 输入表格
 
 Edit `input/containers.xlsx`. Put container numbers in the `Container` column starting from row 2, and put a supported carrier code in `Carrier`. Do not fill in POL: the program infers it from the first ocean-vessel loading event of the latest journey.
