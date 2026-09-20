@@ -780,10 +780,6 @@
       pageButtonsEl.innerHTML = pages.map((n) =>
         `<button type="button" class="${n === page ? "active" : "secondary"}" data-page="${n}">${n}</button>`
       ).join("");
-      if (currentIndices.length === 1) {
-        const current = document.getElementById("row-" + currentIndices[0]);
-        if (current) current.scrollIntoView({ block: "nearest" });
-      }
     }
 
     async function api(path, options) {

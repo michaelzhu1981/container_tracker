@@ -29,6 +29,7 @@ def test_status_page_and_stop_when_idle(tmp_path: Path):
         assert "Container Tracker" in page.text
         assert ">Time<" in page.text
         assert "Query time" in page.text
+        assert "scrollIntoView" not in page.text
         status = client.get("/api/status")
         assert status.status_code == 200
         assert status.json()["job"]["elapsed_ms"] is None
