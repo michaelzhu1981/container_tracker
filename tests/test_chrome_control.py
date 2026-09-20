@@ -1,5 +1,4 @@
 import asyncio
-import json
 import subprocess
 from types import SimpleNamespace
 
@@ -64,17 +63,36 @@ def test_show_normal_chrome_url_reuses_existing_app(monkeypatch):
 
 @pytest.mark.parametrize("code", ["BROWSER_PERMISSION", "TAB_NOT_FOUND", "BROWSER_CLOSED"])
 def test_bridge_preserves_error_codes_and_target(monkeypatch, code):
-    requests = []
+    commands = []
 
     def run(cmd, **kwargs):
-        requests.append(json.loads(cmd[-1]))
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": False, "code": code, "error": "test failure"}))
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=f"ERROR\t{code}\ttest failure\n")
 
     monkeypatch.setattr("chrome_control.subprocess.run", run)
     with pytest.raises(SystemChromeError) as error:
         chrome_command(104, "evaluate", target=ChromeTarget(104, 20, 30), script="1")
     assert error.value.code == code
-    assert requests == [{"pid": 104, "action": "evaluate", "window_id": 20, "tab_id": 30, "script": "1"}]
+    assert commands[0][1].endswith("chrome_bridge.applescript")
+    assert commands[0][2:] == ["evaluate", "104", "20", "30", "1"]
+
+
+def test_applescript_bridge_parses_inventory_and_evaluate(monkeypatch):
+    outputs = iter([
+        "OK\n20\t30\thttps://www.oocl.com/entry\n99\t98\thttps://example.com/\n",
+        "OK\n{\"ready\":true}\n",
+    ])
+    monkeypatch.setattr(
+        "chrome_control.subprocess.run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=next(outputs), stderr=""),
+    )
+    assert chrome_command(104, "inventory") == [
+        {"id": 20, "tabs": [{"id": 30, "url": "https://www.oocl.com/entry"}]},
+        {"id": 99, "tabs": [{"id": 98, "url": "https://example.com/"}]},
+    ]
+    assert chrome_command(
+        104, "evaluate", target=ChromeTarget(104, 20, 30), script="probe"
+    ) == '{"ready":true}'
 
 
 def test_unresponsive_bridge_is_bounded(monkeypatch):

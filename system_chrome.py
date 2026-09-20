@@ -1170,7 +1170,8 @@ class SystemChromePage:
                             # LaunchServices can show the target without Apple
                             # Events.  Keep the carrier alive while the user
                             # grants Automation access, then bind this tab.
-                            await asyncio.to_thread(show_normal_chrome_url, self._target_url)
+                            if not launched_here:
+                                await asyncio.to_thread(show_normal_chrome_url, self._target_url)
                             launched_here = True
                             permission_waiting = True
                             deadline = max(deadline, time.monotonic() + 600)

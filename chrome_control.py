@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -24,26 +23,62 @@ class ChromeTarget:
 
 
 def chrome_command(pid: int, action: str, *, target: ChromeTarget | None = None, **args) -> Any:
-    request = {"pid": pid, "action": action, **args}
-    if target is not None:
-        request.update(window_id=target.window_id, tab_id=target.tab_id)
+    window_id = target.window_id if target is not None else 0
+    tab_id = target.tab_id if target is not None else 0
+    payload = str(args.get("script", args.get("url", "")))
     try:
         result = subprocess.run(
-            ["osascript", "-l", "JavaScript", str(Path(__file__).with_name("chrome_bridge.js")),
-             json.dumps(request)],
+            [
+                "osascript", str(Path(__file__).with_name("chrome_bridge.applescript")),
+                action, str(pid), str(window_id), str(tab_id), payload,
+            ],
             check=False, capture_output=True, text=True, timeout=15,
         )
     except subprocess.TimeoutExpired as exc:
         raise SystemChromeError("Chrome did not respond within 15 seconds.", "TIMEOUT") from exc
+    raw = (result.stdout or "").rstrip("\r\n")
     if result.returncode:
-        raise SystemChromeError((result.stderr or result.stdout).strip() or "Chrome bridge failed.")
-    try:
-        response = json.loads(result.stdout)
-    except (ValueError, TypeError) as exc:
-        raise SystemChromeError("Chrome returned an invalid bridge response.") from exc
-    if not response.get("ok"):
-        raise SystemChromeError(response.get("error", "Chrome bridge failed."), response.get("code", "NAVIGATION"))
-    return response.get("value")
+        message = (result.stderr or raw).strip() or "Chrome bridge failed."
+        code = "BROWSER_PERMISSION" if re.search(r"-1743|-10004|not authorized|not permitted", message, re.I) else "NAVIGATION"
+        raise SystemChromeError(message, code)
+    if raw.startswith("ERROR\t"):
+        _, code, message = raw.split("\t", 2)
+        raise SystemChromeError(message, code)
+    if raw == "OK":
+        body = ""
+    elif raw.startswith("OK\n"):
+        body = raw[3:]
+    else:
+        raise SystemChromeError("Chrome returned an invalid bridge response.")
+
+    def tab_record(line: str) -> dict[str, Any]:
+        record_tab_id, _, url = line.partition("\t")
+        return {"id": int(record_tab_id), "url": url}
+
+    if action == "inventory":
+        windows: dict[int, list[dict[str, Any]]] = {}
+        for line in body.splitlines():
+            if not line:
+                continue
+            record_window_id, record_tab_id, url = line.split("\t", 2)
+            windows.setdefault(int(record_window_id), []).append(
+                {"id": int(record_tab_id), "url": url}
+            )
+        return [{"id": key, "tabs": value} for key, value in windows.items()]
+    if action == "new_window":
+        record_window_id, record_tab_id, url = body.split("\t", 2)
+        return {"id": int(record_window_id), "tab": {"id": int(record_tab_id), "url": url}}
+    if action == "tabs":
+        return [tab_record(line) for line in body.splitlines() if line]
+    if action in {"tab", "new_tab", "navigate"}:
+        return tab_record(body)
+    if action == "bounds":
+        return [int(value) for value in body.split(",")]
+    if action in {"close_window", "close_tab", "activate"}:
+        return body.lower() == "true"
+    if action == "evaluate":
+        return body
+    return body
 
 
 def normal_chrome_pid() -> int | None:
