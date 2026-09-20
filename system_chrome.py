@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from chrome_control import (
-    ChromeTarget, SystemChromeError, chrome_command, normal_chrome_pid, launch_normal_chrome,
+    ChromeTarget, SystemChromeError, chrome_command, normal_chrome_pid,
+    launch_normal_chrome, show_normal_chrome_url,
 )
 
 LOGGER = logging.getLogger("container_tracker")
@@ -1153,6 +1154,7 @@ class SystemChromePage:
             await asyncio.to_thread(launch_normal_chrome, self._target_url)
         deadline = time.monotonic() + self.appear_s
         last_error = None
+        permission_waiting = False
         while time.monotonic() < deadline:
             if self.should_abort and self.should_abort():
                 raise SystemChromeError("Stopped before Chrome opened the tracking page.", "CANCELLED")
@@ -1162,7 +1164,29 @@ class SystemChromePage:
                     inventory = await asyncio.to_thread(chrome_command, pid, "inventory")
                 except SystemChromeError as exc:
                     if exc.code == "BROWSER_PERMISSION":
-                        raise
+                        if not self.wait_for_permission:
+                            raise
+                        if not permission_waiting:
+                            # LaunchServices can show the target without Apple
+                            # Events.  Keep the carrier alive while the user
+                            # grants Automation access, then bind this tab.
+                            await asyncio.to_thread(show_normal_chrome_url, self._target_url)
+                            launched_here = True
+                            permission_waiting = True
+                            deadline = max(deadline, time.monotonic() + 600)
+                            LOGGER.warning(
+                                "%s Chrome automation permission required: %s",
+                                self._carrier, exc,
+                            )
+                            if self.on_permission_wait:
+                                self.on_permission_wait({
+                                    "code": exc.code,
+                                    "mode": "browser_permission",
+                                    "timeout_seconds": 600,
+                                })
+                        last_error = exc
+                        await asyncio.sleep(2)
+                        continue
                     last_error = exc
                 else:
                     if launched_here:
@@ -1181,6 +1205,8 @@ class SystemChromePage:
                             "Bound %s Chrome pid=%s window=%s tab=%s",
                             self._carrier, pid, target.window_id, target.tab_id,
                         )
+                        if permission_waiting and self.on_permission_wait:
+                            self.on_permission_wait({"code": None})
                         await self._wait_until_js_enabled()
                         return
                     # Never retry a window-creation mutation: it may have

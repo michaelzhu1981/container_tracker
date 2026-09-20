@@ -11,6 +11,7 @@ from chrome_control import (
     chrome_command,
     launch_normal_chrome,
     normal_chrome_pid,
+    show_normal_chrome_url,
 )
 from system_chrome import SystemChromePage
 
@@ -45,6 +46,20 @@ def test_launch_normal_chrome_opens_visible_target_window(monkeypatch):
         "--disable-popup-blocking", "--new-window", ENTRY,
     ]]
     assert "--no-startup-window" not in calls[0]
+
+
+def test_show_normal_chrome_url_reuses_existing_app(monkeypatch):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("chrome_control.subprocess.run", run)
+    show_normal_chrome_url(ENTRY)
+    assert calls == [[
+        "open", "-a", "/Applications/Google Chrome.app", ENTRY,
+    ]]
 
 
 @pytest.mark.parametrize("code", ["BROWSER_PERMISSION", "TAB_NOT_FOUND", "BROWSER_CLOSED"])
@@ -153,6 +168,45 @@ async def test_start_binds_the_visible_window_it_launched(monkeypatch):
     assert launched == [ENTRY]
     assert page._target == ChromeTarget(104, 20, 30)
     assert [action for action, _ in calls] == ["inventory", "tab", "evaluate"]
+
+
+@pytest.mark.asyncio
+async def test_inventory_permission_shows_chrome_and_waits_instead_of_failing(monkeypatch):
+    attempts = 0
+    shown = []
+    events = []
+
+    monkeypatch.setattr("system_chrome.normal_chrome_pid", lambda: 104)
+    monkeypatch.setattr("system_chrome.show_normal_chrome_url", shown.append)
+
+    def command(pid, action, *, target=None, **kwargs):
+        nonlocal attempts
+        if action == "inventory":
+            attempts += 1
+            if attempts == 1:
+                raise SystemChromeError("inventory denied (-1743)", "BROWSER_PERMISSION")
+            return [{"id": 20, "tabs": [{"id": 30, "url": ENTRY}]}]
+        if action == "tab":
+            return {"id": 30, "url": ENTRY}
+        if action == "evaluate":
+            return "1"
+        raise AssertionError(action)
+
+    async def no_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("system_chrome.chrome_command", command)
+    monkeypatch.setattr("system_chrome.asyncio.sleep", no_sleep)
+    page = SystemChromePage(
+        ENTRY, host="oocl.com", carrier="OOLU", on_permission_wait=events.append,
+    )
+    await asyncio.wait_for(page.start(), 1)
+    assert shown == [ENTRY]
+    assert page._target == ChromeTarget(104, 20, 30)
+    assert events == [
+        {"code": "BROWSER_PERMISSION", "mode": "browser_permission", "timeout_seconds": 600},
+        {"code": None},
+    ]
 
 
 @pytest.mark.asyncio

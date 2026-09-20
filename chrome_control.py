@@ -85,3 +85,18 @@ def launch_normal_chrome(url: str) -> None:
     )
     if result.returncode:
         raise SystemChromeError(result.stderr.strip() or "Could not start Google Chrome.")
+
+
+def show_normal_chrome_url(url: str) -> None:
+    """Show ``url`` in the existing normal Chrome without Apple Events."""
+    executable = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if not executable.is_file():
+        executable = Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if not executable.is_file():
+        raise SystemChromeError("Google Chrome is not installed.")
+    result = subprocess.run(
+        ["open", "-a", str(executable.parents[2]), url],
+        check=False, capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise SystemChromeError(result.stderr.strip() or "Could not show Google Chrome.")
