@@ -1112,6 +1112,20 @@ class SystemChromePage:
             self._known_urls[tab["url"]] = target
         return target
 
+    def _launched_target(self, pid: int, inventory: Any) -> ChromeTarget | None:
+        """Find the visible target tab created before Apple Events binding."""
+        if not isinstance(inventory, list):
+            return None
+        host = self._host.lower()
+        for window in inventory:
+            if not isinstance(window, dict):
+                continue
+            for tab in window.get("tabs") or []:
+                url = str(tab.get("url") or "")
+                if host and host in url.lower():
+                    return ChromeTarget(pid, int(window["id"]), int(tab["id"]))
+        return None
+
     @property
     def tab_url(self) -> str | None:
         return self._tab_url
@@ -1134,8 +1148,9 @@ class SystemChromePage:
         # Keep the user's existing verification cookies, but exclude every
         # Playwright/custom-profile instance when resolving the normal process.
         pid = await asyncio.to_thread(normal_chrome_pid)
+        launched_here = pid is None
         if pid is None:
-            await asyncio.to_thread(launch_normal_chrome)
+            await asyncio.to_thread(launch_normal_chrome, self._target_url)
         deadline = time.monotonic() + self.appear_s
         last_error = None
         while time.monotonic() < deadline:
@@ -1144,12 +1159,30 @@ class SystemChromePage:
             pid = await asyncio.to_thread(normal_chrome_pid)
             if pid is not None:
                 try:
-                    await asyncio.to_thread(chrome_command, pid, "inventory")
+                    inventory = await asyncio.to_thread(chrome_command, pid, "inventory")
                 except SystemChromeError as exc:
                     if exc.code == "BROWSER_PERMISSION":
                         raise
                     last_error = exc
                 else:
+                    if launched_here:
+                        target = self._launched_target(pid, inventory)
+                        if target is None:
+                            await asyncio.sleep(0.5)
+                            continue
+                        self._target = target
+                        self._entry_target = target
+                        tab = await asyncio.to_thread(
+                            chrome_command, pid, "tab", target=target
+                        )
+                        self._remember_tab(tab)
+                        self._closed = False
+                        LOGGER.info(
+                            "Bound %s Chrome pid=%s window=%s tab=%s",
+                            self._carrier, pid, target.window_id, target.tab_id,
+                        )
+                        await self._wait_until_js_enabled()
+                        return
                     # Never retry a window-creation mutation: it may have
                     # succeeded even if its response was lost.
                     window = await asyncio.to_thread(chrome_command, pid, "new_window", url=self._target_url)

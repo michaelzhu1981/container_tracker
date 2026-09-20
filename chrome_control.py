@@ -63,14 +63,24 @@ def normal_chrome_pid() -> int | None:
     return None
 
 
-def launch_normal_chrome() -> None:
+def launch_normal_chrome(url: str) -> None:
+    """Launch a visible normal Chrome window at ``url``.
+
+    The native bridge cannot create the first window when macOS has not yet
+    granted Apple Events access.  Opening the target visibly also gives the
+    user somewhere to grant/complete the carrier check while the bridge binds
+    the exact process, window and tab afterwards.
+    """
     executable = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
     if not executable.is_file():
         executable = Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     if not executable.is_file():
         raise SystemChromeError("Google Chrome is not installed.")
     result = subprocess.run(
-        ["open", "-na", str(executable.parents[2]), "--args", "--disable-popup-blocking", "--no-startup-window"],
+        [
+            "open", "-na", str(executable.parents[2]), "--args",
+            "--disable-popup-blocking", "--new-window", url,
+        ],
         check=False, capture_output=True, text=True, timeout=15,
     )
     if result.returncode:

@@ -70,9 +70,15 @@ function run(argv) {
         }
         return JSON.stringify({ok: true, value: value === undefined ? null : value});
     } catch (e) {
-        const message = stage + ": " + String(e);
+        // Localized JXA errors can collapse an Apple Events denial to only
+        // "Error: 发生错误。".  Preserve the numeric field so -1743 is
+        // classified correctly on every macOS language.
+        const errorNumber = Number(e && e.errorNumber);
+        const suffix = Number.isFinite(errorNumber) ? " (" + errorNumber + ")" : "";
+        const message = stage + ": " + String(e) + suffix;
         // Only an explicit Chrome/OS permission error is a permission failure.
-        const denied = /javascript.*apple\s*(events?|事件|script)|apple\s*(events?|事件|script).*javascript|not authorized|not permitted|未获授权|不允许访问|(-1743)|(-10004)/i.test(message);
+        const denied = errorNumber === -1743 || errorNumber === -10004
+            || /javascript.*apple\s*(events?|事件|script)|apple\s*(events?|事件|script).*javascript|not authorized|not permitted|未获授权|不允许访问|(-1743)|(-10004)/i.test(message);
         return JSON.stringify(fail(denied ? "BROWSER_PERMISSION" : "NAVIGATION", message));
     }
 }

@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from chrome_control import ChromeTarget, SystemChromeError, chrome_command, normal_chrome_pid
+from chrome_control import (
+    ChromeTarget,
+    SystemChromeError,
+    chrome_command,
+    launch_normal_chrome,
+    normal_chrome_pid,
+)
 from system_chrome import SystemChromePage
 
 
@@ -23,6 +29,22 @@ def test_resolve_normal_process_ignores_parallel_chrome_instances(monkeypatch):
 """
     monkeypatch.setattr("chrome_control.subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=listing))
     assert normal_chrome_pid() == 104
+
+
+def test_launch_normal_chrome_opens_visible_target_window(monkeypatch):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("chrome_control.subprocess.run", run)
+    launch_normal_chrome(ENTRY)
+    assert calls == [[
+        "open", "-na", "/Applications/Google Chrome.app", "--args",
+        "--disable-popup-blocking", "--new-window", ENTRY,
+    ]]
+    assert "--no-startup-window" not in calls[0]
 
 
 @pytest.mark.parametrize("code", ["BROWSER_PERMISSION", "TAB_NOT_FOUND", "BROWSER_CLOSED"])
@@ -104,6 +126,33 @@ async def test_start_binds_normal_process_and_queries_immediately(bound_chrome):
     assert page._target == ChromeTarget(104, 20, 30)
     assert await page.evaluate("() => 1") == 1
     assert [action for _, action, _ in model.calls] == ["inventory", "new_window", "evaluate", "evaluate"]
+
+
+@pytest.mark.asyncio
+async def test_start_binds_the_visible_window_it_launched(monkeypatch):
+    launched = []
+    calls = []
+    pids = iter([None, 104])
+
+    monkeypatch.setattr("system_chrome.normal_chrome_pid", lambda: next(pids, 104))
+    monkeypatch.setattr("system_chrome.launch_normal_chrome", launched.append)
+
+    def command(pid, action, *, target=None, **kwargs):
+        calls.append((action, target))
+        if action == "inventory":
+            return [{"id": 20, "tabs": [{"id": 30, "url": ENTRY}]}]
+        if action == "tab":
+            return {"id": 30, "url": ENTRY}
+        if action == "evaluate":
+            return "1"
+        raise AssertionError(action)
+
+    monkeypatch.setattr("system_chrome.chrome_command", command)
+    page = SystemChromePage(ENTRY, host="oocl.com", carrier="OOLU")
+    await asyncio.wait_for(page.start(), 1)
+    assert launched == [ENTRY]
+    assert page._target == ChromeTarget(104, 20, 30)
+    assert [action for action, _ in calls] == ["inventory", "tab", "evaluate"]
 
 
 @pytest.mark.asyncio
