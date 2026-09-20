@@ -24,6 +24,7 @@ LOGGER = logging.getLogger("container_tracker")
 TRACK_URL = "https://www.cma-cgm.com/ebusiness/tracking"
 
 _CLICK_PREVIOUS_MOVES_JS = """() => {
+    /* cma-click-previous-moves */
     const visible = (el) => {
         if (!el) return false;
         const r = el.getBoundingClientRect();
@@ -43,18 +44,39 @@ _CLICK_PREVIOUS_MOVES_JS = """() => {
         const label = (el.getAttribute("aria-label") || el.innerText || "").toLowerCase();
         if (label.includes("hide previous")) continue;
         seen.add(el);
-        const cell = el.closest(".k-hierarchy-cell") || el;
-        cell.click();
-        if (cell !== el) el.click();
+        el.click();
         n += 1;
     }
     return n;
 }"""
 
+_VISIBLE_PREVIOUS_MOVES_COUNT_JS = """() => {
+    /* cma-visible-previous-moves */
+    const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8
+            && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    let n = 0;
+    const targets = document.querySelectorAll(
+        "a[aria-label='Display Previous Moves'], "
+        + "a[aria-label='Display Details'], "
+        + ".k-hierarchy-cell[aria-expanded='false'] a"
+    );
+    for (const el of targets) {
+        const label = (el.getAttribute("aria-label") || el.innerText || "").toLowerCase();
+        if (visible(el) && !label.includes("hide previous")) n += 1;
+    }
+    return n;
+}"""
+
 _VISIBLE_EVENT_COUNT_JS = """() => {
+    /* cma-visible-event-count */
     const skip = new Set(["pol", "pod"]);
     let n = 0;
-    for (const el of document.querySelectorAll("#gridTrackingDetails .capsule, .capsule")) {
+    for (const el of document.querySelectorAll("#gridTrackingDetails .capsule")) {
         const text = (el.innerText || "").trim().toLowerCase();
         if (!text || skip.has(text)) continue;
         const r = el.getBoundingClientRect();
@@ -498,21 +520,26 @@ class CmaTracker(BaseTracker):
         except Exception:  # noqa: BLE001
             return 0
 
+    async def _visible_previous_moves_count(self) -> int:
+        try:
+            return int(await self.page.evaluate(_VISIBLE_PREVIOUS_MOVES_COUNT_JS) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
     async def expand_result_details(self) -> None:
         if getattr(self, "_details_expanded", False):
             return
         before = await self._visible_event_count()
-        # Grid/JSON already has the timeline. Clicking "Previous Moves" via
-        # Apple Events often reports success without adding capsules, then
-        # the old 8s wait ran again from parse and screenshot.
-        if before > 1:
+        collapsed_before = await self._visible_previous_moves_count()
+        if collapsed_before == 0:
             self._details_expanded = True
             return
         clicked = await self._click_previous_moves()
         if clicked:
             for _ in range(_EXPAND_POLLS):
                 now = await self._visible_event_count()
-                if now > before:
+                collapsed_now = await self._visible_previous_moves_count()
+                if now > before or collapsed_now < collapsed_before:
                     await self.page.wait_for_timeout(400)
                     break
                 await self.page.wait_for_timeout(200)

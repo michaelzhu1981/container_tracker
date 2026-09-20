@@ -384,6 +384,94 @@ def test_oocl_empty_return_keeps_completed_voyage_until_a_new_cycle_starts():
     assert result.pol == "SHANGHAI"
 
 
+def test_cmdu_empty_return_keeps_completed_voyage():
+    events = [
+        ev(
+            type="LOAD",
+            location_raw="TUTICORIN",
+            event_date="2026-07-13",
+            event_time="01:39",
+            sequence_index=0,
+            vessel="FSL KELANG",
+            voyage="K14G3S",
+            raw_text="Loaded on board TUTICORIN",
+        ),
+        ev(
+            type="DEPA",
+            location_raw="TUTICORIN",
+            event_date="2026-07-13",
+            event_time="09:05",
+            sequence_index=1,
+            vessel="FSL KELANG",
+            voyage="K14G3S",
+            raw_text="Vessel Departure TUTICORIN",
+        ),
+        ev(
+            type="GTIN",
+            location_raw="SAVANNAH, GA",
+            event_date="2026-09-08",
+            event_time="09:26",
+            sequence_index=2,
+            empty=True,
+            transport_mode="TRUCK",
+            raw_text="Gate in empty at Depot SAVANNAH, GA",
+        ),
+    ]
+    result = evaluate(
+        events,
+        container="CMAU9536494",
+        carrier="CMDU",
+        timeline_order="oldest_first",
+        checked_at="2026-09-20 22:30:00",
+    )
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol == "TUTICORIN"
+    assert result.atd == "2026-07-13 09:05"
+    assert result.latest_event == "Gate in empty at Depot SAVANNAH, GA"
+
+
+def test_cmdu_empty_return_does_not_keep_old_voyage_after_new_cycle_starts():
+    events = [
+        ev(
+            type="DEPA",
+            location_raw="TUTICORIN",
+            event_date="2026-07-13",
+            sequence_index=0,
+            vessel="OLD SHIP",
+            voyage="001E",
+            raw_text="Vessel Departure TUTICORIN",
+        ),
+        ev(
+            type="GTIN",
+            location_raw="SAVANNAH, GA",
+            event_date="2026-09-08",
+            sequence_index=1,
+            empty=True,
+            transport_mode="TRUCK",
+            raw_text="Gate in empty at Depot SAVANNAH, GA",
+        ),
+        ev(
+            type="GTIN",
+            location_raw="YANTIAN",
+            event_date="2026-09-18",
+            sequence_index=2,
+            transport_mode="TRUCK",
+            raw_text="Ready to be loaded YANTIAN",
+        ),
+    ]
+    result = evaluate(
+        events,
+        container="CMAU9536494",
+        carrier="CMDU",
+        timeline_order="oldest_first",
+        checked_at="2026-09-20 22:30:00",
+    )
+    assert result.status == "NOT_LOADED"
+    assert result.sailed is False
+
+
 def test_empty_return_starts_new_cycle():
     events = [
         ev(

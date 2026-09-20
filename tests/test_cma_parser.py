@@ -53,7 +53,7 @@ def test_parse_on_board_waiting():
     assert result.sailed is False
 
 
-def test_parse_empty_returned_is_not_loaded():
+def test_parse_empty_returned_keeps_proven_completed_voyage():
     html = (FIXTURES / "empty_returned.html").read_text(encoding="utf-8")
     events = parse_cma_html(html)
     result = evaluate(
@@ -63,8 +63,13 @@ def test_parse_empty_returned_is_not_loaded():
         timeline_order="oldest_first",
         checked_at="2026-09-13 00:00:00",
     )
-    assert result.status == "NOT_LOADED"
-    assert result.sailed is False
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol == "SHANGHAI"
+    assert result.latest_event is not None
+    assert "EMPTY RETURN" in result.latest_event
+    assert "LOS ANGELES" in result.latest_event
 
 
 def test_parse_embedded_response_data():
@@ -117,16 +122,20 @@ def test_parse_kendo_grid_rows():
 class _ExpandPage:
     def __init__(self) -> None:
         self.visible_events = 1
+        self.visible_previous_moves = 1
         self.clicked = 0
         self.evaluate_scripts: list[str] = []
 
     async def evaluate(self, script: str):
         self.evaluate_scripts.append(script)
-        if "Display Previous Moves" in script:
+        if "cma-click-previous-moves" in script:
             self.clicked += 1
             self.visible_events = 3
+            self.visible_previous_moves = 0
             return 1
-        if "capsule" in script:
+        if "cma-visible-previous-moves" in script:
+            return self.visible_previous_moves
+        if "cma-visible-event-count" in script:
             return self.visible_events
         return 0
 
@@ -146,11 +155,21 @@ def test_expand_result_details_clicks_previous_moves_and_waits():
     assert any("Display Previous Moves" in script for script in page.evaluate_scripts)
 
 
-def test_expand_result_details_skips_when_timeline_already_visible():
+def test_expand_result_details_clicks_when_summary_and_current_event_are_visible():
     page = _ExpandPage()
     page.visible_events = 7
     tracker = CmaTracker(page)
     asyncio.run(tracker.expand_result_details())
+    asyncio.run(tracker.expand_result_details())
+    assert page.clicked == 1
+    assert page.visible_events == 3
+
+
+def test_expand_result_details_skips_when_no_previous_moves_control_is_visible():
+    page = _ExpandPage()
+    page.visible_events = 7
+    page.visible_previous_moves = 0
+    tracker = CmaTracker(page)
     asyncio.run(tracker.expand_result_details())
     assert page.clicked == 0
     assert page.visible_events == 7
@@ -160,10 +179,12 @@ def test_expand_result_details_does_not_poll_when_click_adds_nothing():
     class Page(_ExpandPage):
         async def evaluate(self, script: str):
             self.evaluate_scripts.append(script)
-            if "Display Previous Moves" in script:
+            if "cma-click-previous-moves" in script:
                 self.clicked += 1
                 return 1
-            if "capsule" in script:
+            if "cma-visible-previous-moves" in script:
+                return self.visible_previous_moves
+            if "cma-visible-event-count" in script:
                 return self.visible_events
             return 0
 

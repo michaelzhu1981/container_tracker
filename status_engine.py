@@ -253,7 +253,8 @@ def select_latest_journey(
         return []
     act = [e for e in events if e.classifier == "ACT"]
     pool = act or events
-    if any(is_empty_return(e) for e in pool):
+    had_empty_return = any(is_empty_return(e) for e in pool)
+    if had_empty_return:
         pool = _apply_empty_return_split(
             pool,
             timeline_order,
@@ -261,6 +262,12 @@ def select_latest_journey(
         )
         if not pool:
             return []
+        # When a completed journey is intentionally preserved, retain its
+        # downstream empty return too. Grouping by vessel/voyage would remove
+        # that non-vessel event and make Latest Event stale. A new cycle is
+        # already isolated above because only events after the return survive.
+        if preserve_completed_after_return and any(is_empty_return(e) for e in pool):
+            return pool
 
     grouped = _group_latest(
         pool, lambda e: (e.booking or "").strip().upper() or None, timeline_order
@@ -352,10 +359,10 @@ def evaluate(
     journey = select_latest_journey(
         events,
         timeline_order,
-        # OOCL and HMM retain the completed shipment timeline after the
+        # OOCL, HMM, and CMA retain the completed shipment timeline after the
         # consignee returns the empty box. Preserve a proven ocean departure
         # so the shipment remains SAILED rather than becoming NOT_LOADED.
-        preserve_completed_after_return=carrier in {"OOLU", "HDMU"},
+        preserve_completed_after_return=carrier in {"OOLU", "HDMU", "CMDU"},
     )
     if journey is None:
         return _finalize(
