@@ -8,6 +8,20 @@ This project is a local macOS container-tracking tool. It reads container number
 
 Code identifiers, CLI text, Excel headers, status values, and errors remain in English. See [`design/container_tracking_mvp_plan.md`](design/container_tracking_mvp_plan.md) for detailed business rules.
 
+## Project overview / 项目概览
+
+The local web console shows batch controls, per-carrier progress, query time, and the latest result for every container.
+
+本地网页控制台集中展示批量任务控制、各船公司进度、查询耗时，以及每个集装箱的最新结果。
+
+![Container Tracker web console showing a completed multi-carrier batch](docs/images/web-ui.png)
+
+The input workbook is intentionally simple: add one container per row and select the matching carrier code. The tracker reads this file and writes the detailed results to `output/containers_result.xlsx`.
+
+输入表保持简洁：每行填写一个箱号及对应的船公司代码。程序读取该文件，并把详细结果写入 `output/containers_result.xlsx`。
+
+![Container Tracker input workbook with Container and Carrier columns](docs/images/input-workbook.png)
+
 ## Supported carriers / 支持的船公司
 
 | Code | Carrier / 船公司 | Browser mode / 浏览器模式 | Human supervision / 人工监督 |
