@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -22,6 +23,29 @@ class ChromeTarget:
     tab_id: int
 
 
+def _bridge_executable() -> Path:
+    source = Path(__file__).with_name("chrome_bridge.m")
+    executable = Path(__file__).with_name("sessions") / ".chrome_bridge_native"
+    if executable.is_file() and executable.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return executable
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    temporary = executable.with_suffix(".building")
+    result = subprocess.run(
+        [
+            "xcrun", "clang", "-fobjc-arc", "-framework", "Foundation",
+            "-framework", "AppKit", "-framework", "ScriptingBridge",
+            str(source), "-o", str(temporary),
+        ],
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode:
+        raise SystemChromeError(
+            (result.stderr or result.stdout).strip() or "Could not build the Chrome bridge."
+        )
+    os.replace(temporary, executable)
+    return executable
+
+
 def chrome_command(pid: int, action: str, *, target: ChromeTarget | None = None, **args) -> Any:
     window_id = target.window_id if target is not None else 0
     tab_id = target.tab_id if target is not None else 0
@@ -29,7 +53,7 @@ def chrome_command(pid: int, action: str, *, target: ChromeTarget | None = None,
     try:
         result = subprocess.run(
             [
-                "osascript", str(Path(__file__).with_name("chrome_bridge.applescript")),
+                str(_bridge_executable()),
                 action, str(pid), str(window_id), str(tab_id), payload,
             ],
             check=False, capture_output=True, text=True, timeout=15,
@@ -73,7 +97,8 @@ def chrome_command(pid: int, action: str, *, target: ChromeTarget | None = None,
     if action in {"tab", "new_tab", "navigate"}:
         return tab_record(body)
     if action == "bounds":
-        return [int(value) for value in body.split(",")]
+        left, top, right, bottom = (int(value) for value in body.split(","))
+        return {"x": left, "y": top, "width": right - left, "height": bottom - top}
     if action in {"close_window", "close_tab", "activate"}:
         return body.lower() == "true"
     if action == "evaluate":

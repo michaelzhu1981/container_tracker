@@ -20,7 +20,7 @@
 | `EGLV` | Evergreen / 长荣海运 | 已实现；默认无头。使用长荣中国 ShipmentLink 按箱号查询；匿名查询只返回最新一条货柜动态 |
 | `ZIMU` | ZIM | 已实现；用本机普通 Chrome 过 hCaptcha 后批量查箱。只走 Track a Shipment 表单，不用箱号深链 |
 
-Playwright 查询使用各船公司的持久资料目录（`sessions/chrome_{code}/`），优先使用系统 Google Chrome，不可用时退回 Playwright Chromium。HLCU / CMDU / OOLU / ZIMU / HDMU 的原生查询使用普通 Chrome 已有的登录和验证状态，并为每家创建独立查询窗口；操作绑定进程、窗口和页签 ID，排除并行运行的 Playwright 实例。OOLU 结果页跳转后仍跟随原页签，结束时只关闭该次查询的窗口。MSCU / MAEU 及原生查询船公司默认 headed。
+Playwright 查询使用各船公司的持久资料目录（`sessions/chrome_{code}/`），优先使用系统 Google Chrome，不可用时退回 Playwright Chromium。HLCU / CMDU / OOLU / ZIMU / HDMU 的原生查询使用普通 Chrome 已有的登录和验证状态，并为每家创建独立查询窗口；macOS 上通过按 PID 创建的 ScriptingBridge 连接绑定进程、窗口和页签 ID，排除并行运行的 Playwright 实例。OOLU 结果页跳转后仍跟随原页签，结束时只关闭该次查询的窗口。MSCU / MAEU 及原生查询船公司默认 headed。
 
 ## 安装
 
@@ -30,6 +30,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
+
+macOS 原生 Chrome 查询会在首次使用时通过 `xcrun clang` 编译本地 ScriptingBridge 小程序；机器需要已安装 Xcode Command Line Tools（缺少时运行 `xcode-select --install`）。
 
 ## 输入
 

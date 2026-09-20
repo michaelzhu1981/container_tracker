@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
@@ -18,6 +19,11 @@ from system_chrome import SystemChromePage
 ENTRY = "https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx"
 POPUP = "https://www.oocl.com/Pages/ExpressLink.aspx?eltype=ct&businessNumber=TGBU5255226"
 RESULT = "https://www.cargosmart.com/result/123"
+
+
+@pytest.fixture(autouse=True)
+def native_bridge_path(monkeypatch):
+    monkeypatch.setattr("chrome_control._bridge_executable", lambda: Path("/tmp/chrome_bridge_native"))
 
 
 def test_resolve_normal_process_ignores_parallel_chrome_instances(monkeypatch):
@@ -73,11 +79,11 @@ def test_bridge_preserves_error_codes_and_target(monkeypatch, code):
     with pytest.raises(SystemChromeError) as error:
         chrome_command(104, "evaluate", target=ChromeTarget(104, 20, 30), script="1")
     assert error.value.code == code
-    assert commands[0][1].endswith("chrome_bridge.applescript")
-    assert commands[0][2:] == ["evaluate", "104", "20", "30", "1"]
+    assert commands[0][0] == "/tmp/chrome_bridge_native"
+    assert commands[0][1:] == ["evaluate", "104", "20", "30", "1"]
 
 
-def test_applescript_bridge_parses_inventory_and_evaluate(monkeypatch):
+def test_native_bridge_parses_inventory_and_evaluate(monkeypatch):
     outputs = iter([
         "OK\n20\t30\thttps://www.oocl.com/entry\n99\t98\thttps://example.com/\n",
         "OK\n{\"ready\":true}\n",
