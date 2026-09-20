@@ -83,6 +83,10 @@ def _is_evergreen_sailed_without_origin_details(event: CanonicalEvent) -> bool:
         for marker in (
             "transshipcontainerloadedonvessel",
             "emptycontainerreturned",
+            "pick-upbymerchanthaulage",
+            "received(fcl)",
+            "discharged(fcl)",
+            "dischargedandwaitingfortransshipping",
         )
     )
 
@@ -339,8 +343,8 @@ def evaluate(
             result.voyage = latest.voyage
             result.latest_event = _latest_event_text(latest)
             # The anonymous EGLV response exposes only the latest event. A
-            # transshipment load or empty return proves the ocean journey has
-            # sailed, but cannot identify its origin load port or departure time.
+            # A downstream handling event proves the ocean journey has sailed,
+            # but cannot identify its origin load port or departure time.
             result.pol = None
             result.atd = None
             return _finalize(result, "SAILED", None, None)

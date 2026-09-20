@@ -67,6 +67,46 @@ def test_parse_transship_loaded_is_sailed_without_origin_details():
     assert result.atd is None
 
 
+@pytest.mark.parametrize(
+    "status",
+    (
+        "Pick-up by merchant haulage",
+        "Received (FCL)",
+        "Discharged (FCL)",
+        "Discharged and waiting for transshipping",
+    ),
+)
+def test_downstream_latest_events_are_sailed_without_origin_details(status: str):
+    html = f"""
+    <table>
+      <tr>
+        <th>Container No.</th><th>Date</th><th>Current Status</th>
+        <th>Location</th><th>Vessel/Voyage</th>
+      </tr>
+      <tr>
+        <td>EGHU8519309</td><td>SEP-19-2026</td><td>{status}</td>
+        <td>LOS ANGELES (US)</td><td></td>
+      </tr>
+    </table>
+    """
+    events = parse_evergreen_html(html)
+    result = evaluate(
+        events,
+        container="EGHU8519309",
+        carrier="EGLV",
+        timeline_order="newest_first",
+        checked_at="2026-09-20 00:00:00",
+    )
+
+    assert len(events) == 1
+    assert result.status == "SAILED"
+    assert result.loaded is True
+    assert result.sailed is True
+    assert result.pol is None
+    assert result.atd is None
+    assert status in (result.latest_event or "")
+
+
 def test_tracker_contract():
     assert EvergreenTracker.carrier_code == "EGLV"
     assert EvergreenTracker.timeline_order == "newest_first"
